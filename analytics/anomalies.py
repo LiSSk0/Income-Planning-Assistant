@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 
-def detect_anomalies_iqr(data):
+def detect_and_clean_anomalies(data):
     # 1. Разворачиваем словарь в плоскую таблицу
     rows = []
     for year, months in data.items():
@@ -11,37 +11,51 @@ def detect_anomalies_iqr(data):
 
     df = pd.DataFrame(rows)
 
-    # 2. Считаем квартили (Q1 и Q3) отдельно для каждого месяца (с января по декабрь)
-    # Q1 отсекает нижние 25% значений, Q3 отсекает верхние 25% значений
-    q1 = df.groupby('month')['value'].transform(lambda x: x.quantile(0.25))
-    q3 = df.groupby('month')['value'].transform(lambda x: x.quantile(0.75))
-
-    # 3. Межквартильный размах (IQR) - это базовая "ширина нормы" показателя
+    # 2. Считаем квартили для определения аномалий (используем k=2.5 для стабильности)
+    q1 = df.groupby("month")["value"].transform(lambda x: x.quantile(0.25))
+    q3 = df.groupby("month")["value"].transform(lambda x: x.quantile(0.75))
     iqr = q3 - q1
 
-    # 4. Считаем допустимые границы (классическая формула Тьюки: 2.5 * IQR)
     lower_bound = q1 - 2.5 * iqr
     upper_bound = q3 + 2.5 * iqr
 
-    # 5. Размечаем аномалии (всё, что вылетело за границы)
-    df['anomaly'] = (df['value'] < lower_bound) | (df['value'] > upper_bound)
+    # Размечаем аномалии
+    df["anomaly"] = (df["value"] < lower_bound) | (df["value"] > upper_bound)
 
-    # Указываем тип: взлет или провал
-    df['type'] = 'normal'
-    df.loc[df['value'] > upper_bound, 'type'] = 'spike'
-    df.loc[df['value'] < lower_bound, 'type'] = 'drop'
+    df["type"] = "normal"
+    df.loc[df["value"] > upper_bound, "type"] = "spike"
+    df.loc[df["value"] < lower_bound, "type"] = "drop"
 
-    # Считаем отклонение от медианы месяца (для красивого отчета)
-    median = df.groupby('month')['value'].transform('median')
-    df['pct_change'] = np.where(median > 0, ((df['value'] - median) / median) * 100, 0)
+    # 3. Считаем ЧИСТУЮ медиану для каждого месяца (без учета найденных аномалий!)
+    # Мы временно заменяем аномалии на NaN, чтобы они не влияли на расчет самой медианы
+    df_temp = df.copy()
+    df_temp.loc[df_temp["anomaly"] == True, "value"] = np.nan
+    clean_median = df_temp.groupby("month")["value"].transform(
+        lambda x: x.median()
+    )
 
-    # 6. Приводим таблицу в красивый вид
-    df['date'] = df['year'].astype(str) + '-' + df['month'].astype(str).str.zfill(2)
-    df['pct_change'] = df['pct_change'].round(2)
+    # 4. Создаем колонку с очищенными данными
+    # Если anomaly == True, берем чистую медиану, иначе оставляем родное value
+    df["clean_value"] = np.where(df["anomaly"], clean_median, df["value"])
 
-    result_df = df[['date', 'value', 'anomaly', 'type', 'pct_change']].sort_values('date').reset_index(drop=True)
+    # Дополнительно: процент отклонения (для красоты)
+    df["pct_change"] = np.where(
+        clean_median > 0, ((df["value"] - clean_median) / clean_median) * 100, 0
+    )
 
-    return result_df
+    # Приводим к красивому виду
+    df["date"] = (
+        df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2)
+    )
+    df["pct_change"] = df["pct_change"].round(2)
+    df["clean_value"] = df["clean_value"].astype(
+        float
+    )  # Переводим в float для СКО
+
+    result_df = df[
+        ["date", "value", "clean_value", "anomaly", "type", "pct_change"]
+    ].sort_values("date")
+    return result_df.reset_index(drop=True)
 
 
 if __name__ == "__main__":
@@ -103,7 +117,7 @@ if __name__ == "__main__":
 
     }
 
-    df_res = detect_anomalies_iqr(test_data2)
+    df_res = detect_and_clean_anomalies(test_data)
 
     # вывод только найденных аномалии
     print("Найденные аномалии:")
