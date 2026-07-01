@@ -1,0 +1,103 @@
+1. ПРОВЕРКА СЕРВИСОВ
+javascript
+fetch('http://localhost:5000/health').then(r=>r.json()).then(console.log)
+javascript
+fetch('http://localhost:8080/api/regions').then(r=>r.json()).then(console.log)
+2. ДАННЫЕ В СИСТЕМЕ
+javascript
+fetch('http://localhost:8080/api/facts').then(r=>r.json()).then(data => {
+  console.log(`✅ ${data.length} записей`)
+  console.log('📍 Регионы:', [...new Set(data.map(d=>d.subject))])
+  console.log('📊 Показатели:', [...new Set(data.map(d=>d.indicator))])
+})
+3. ПРОГНОЗ (ГЛАВНАЯ ФИЧА)
+javascript
+fetch('http://localhost:8080/api/forecast?subject=г. Москва&indicator=Доход банка&horizon=6&method=sarimax')
+  .then(r=>r.json())
+  .then(data => {
+    console.log('📊 Прогноз:', data.points)
+    console.log('📈 Качество (RMSE):', data.qualityScore)
+  })
+4. СЕЗОННОСТЬ
+javascript
+fetch('http://localhost:8080/api/seasonality?subject=г. Москва&indicator=Доход банка')
+  .then(r=>r.json()).then(console.log)
+5. ТРЕНДЫ (ДРАЙВЕРЫ)
+javascript
+fetch('http://localhost:8080/api/analytics/drivers?subject=г. Москва&indicator=Доход банка')
+  .then(r=>r.json()).then(console.log)
+6. СЦЕНАРИИ (БАЗОВЫЙ, ОПТИМИСТИЧНЫЙ, ПЕССИМИСТИЧНЫЙ)
+javascript
+fetch('http://localhost:8080/api/scenarios?subject=г. Москва&indicator=Доход банка&horizon=6')
+  .then(r=>r.json())
+  .then(data => data.forEach(s => console.log(`📊 ${s.scenarioType}: ${s.description}`)))
+7. АНОМАЛИИ
+javascript
+fetch('http://localhost:8080/api/anomalies?subject=г. Москва&indicator=Доход банка')
+  .then(r=>r.json()).then(console.log)
+8. AI АНАЛИТИКА (GigaChat)
+javascript
+fetch('http://localhost:8080/api/ai/summary', {
+  method: 'POST',
+  headers: {'Content-Type':'application/json'},
+  body: JSON.stringify({subject:'г. Москва'})
+})
+.then(r=>r.json())
+.then(console.log)
+9. НОВОСТИ
+javascript
+fetch('http://localhost:5000/generate-news', {
+  method: 'POST',
+  headers: {'Content-Type':'application/json'},
+  body: JSON.stringify({subject:'г. Москва', period:30})
+})
+.then(r=>r.json())
+.then(data => console.log('Новости:', data.news))
+10. WEB SOCKET НОВОСТИ (В РЕАЛЬНОМ ВРЕМЕНИ)
+javascript
+const ws = new WebSocket('ws://localhost:5000/ws/news');
+ws.onopen = () => ws.send(JSON.stringify({subject:'г. Москва', period:30}));
+ws.onmessage = (e) => {
+  const data = JSON.parse(e.data);
+  if (data.phase === 'DONE') {
+    console.log('📰 Новости:', data.data);
+    ws.close();
+  }
+};
+11. ЭКСПОРТ В CSV
+javascript
+window.open('http://localhost:8080/api/export/csv?subject=г. Москва')
+12. ПОЛНЫЙ ДЕМО-ПОКАЗ (ОДНИМ КЛИКОМ)
+javascript
+async function fullDemo() {
+  console.log('🚀 ПОЛНЫЙ ДЕМО-ПОКАЗ\n')
+  
+  const r = await fetch('http://localhost:8080/api/regions').then(r=>r.json())
+  console.log('📍 Регионы:', r.join(', '))
+  
+  const f = await fetch('http://localhost:8080/api/forecast?subject=г. Москва&indicator=Доход банка&horizon=6&method=sarimax').then(r=>r.json())
+  console.log('\n📈 Прогноз Доход банка, Москва:')
+  Object.entries(f.points).forEach(([d,v]) => console.log(`  ${d}: ${Math.round(v)}`))
+  console.log(`  Качество (RMSE): ${f.qualityScore}`)
+  
+  const s = await fetch('http://localhost:8080/api/seasonality?subject=г. Москва&indicator=Доход банка').then(r=>r.json())
+  console.log('\n📅 Сезонность:')
+  Object.entries(s).forEach(([m,v]) => console.log(`  Месяц ${m}: ${v}`))
+  
+  const sc = await fetch('http://localhost:8080/api/scenarios?subject=г. Москва&indicator=Доход банка&horizon=6').then(r=>r.json())
+  console.log('\n📊 Сценарии:')
+  sc.forEach(s => console.log(`  ${s.scenarioType}: ${s.description}`))
+  
+  const n = await fetch('http://localhost:5000/generate-news', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({subject:'г. Москва', period:30})
+  }).then(r=>r.json())
+  console.log('\n📰 Новости:')
+  if (n.news && n.news.length > 0) {
+    n.news.slice(0,3).forEach((item,i) => console.log(`  ${i+1}. ${item.title}`))
+  }
+  
+  console.log('\n✅ ДЕМО-ПОКАЗ ЗАВЕРШЕН')
+}
+fullDemo()
