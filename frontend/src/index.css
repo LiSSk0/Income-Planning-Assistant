@@ -1,0 +1,121 @@
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Видимый keyboard-focus на всех интерактивных элементах. */
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: 6px;
+  }
+
+  /* Числа/формулы — моноширинно, чтобы красиво выравнивались. */
+  .tabular {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 999px;
+    border: 2px solid var(--bg-base);
+  }
+}
+
+/* React Flow — тёмная тема для контролов/мини-карты. Дефолтные кнопки
+   React Flow светлые (белый фон, тёмная иконка), из-за чего на нашем
+   тёмном фоне выглядят как белые квадраты. Перекрашиваем кнопки и их
+   SVG-иконки под палитру приложения. */
+.react-flow__controls {
+  box-shadow: 0 8px 30px -12px rgba(0, 0, 0, 0.6);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.react-flow .react-flow__controls-button {
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--border-subtle);
+  width: 28px;
+  height: 28px;
+}
+
+.react-flow .react-flow__controls-button:hover {
+  background: var(--surface-hover);
+}
+
+.react-flow .react-flow__controls-button svg {
+  fill: var(--text-primary);
+  max-width: 14px;
+  max-height: 14px;
+}
+
+.react-flow .react-flow__controls-button:disabled svg {
+  fill: var(--text-muted);
+}
+
+.react-flow__attribution {
+  background: transparent;
+}
+
+/* Рёбра: подсветка при наведении и выделении, чтобы было понятно, какую
+   связь удаляем (клик по связи → Delete). !important перебивает инлайновый
+   stroke-width, заданный в buildEdge. */
+.react-flow__edge {
+  cursor: pointer;
+}
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 3.5 !important;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 4 !important;
+  filter: drop-shadow(0 0 4px rgba(243, 246, 244, 0.45));
+}
+
+/* Доверительный коридор прогноза YoY — пунктирные «усы» (как в документации:
+   «пунктиром обозначен коридор»). recharts ErrorBar рисует <line> внутри
+   .recharts-errorBar — делаем их штриховыми. */
+.recharts-errorBar line,
+.recharts-errorBars line {
+  stroke-dasharray: 4 3;
+}
+
+/* Уважаем prefers-reduced-motion для ВСЕХ анимаций приложения. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
