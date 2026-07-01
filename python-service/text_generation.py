@@ -57,7 +57,7 @@ def gigachat_analyze_news(news_text: str, subject: str, indicators: List[str] = 
     # Формируем список ключевых слов для GigaChat
     keywords = ""
     if indicators:
-        keywords = f"\n\nКлючевые слова для анализа (показатели из вашей системы): {', '.join(indicators)}"
+        keywords = f"\n\nКлючевые слова для анализа: {', '.join(indicators)}"
 
     prompt = f"""Ты - аналитик, который отбирает самые важные новости для бизнеса.
 
@@ -102,7 +102,7 @@ def gigachat_analyze_news(news_text: str, subject: str, indicators: List[str] = 
 
             text = response.choices[0].message.content.strip()
 
-            # Убираем обёртку Markdown
+            # убираем обёртку Markdown
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0]
             elif "```" in text:
@@ -113,6 +113,6 @@ def gigachat_analyze_news(news_text: str, subject: str, indicators: List[str] = 
         print(f"Ошибка GigaChat: {e}")
         return None
 
+
 def gigachat_anomalies(anomalies):
-    """Заглушка для обратной совместимости"""
     return "Аномалии не обнаружены"

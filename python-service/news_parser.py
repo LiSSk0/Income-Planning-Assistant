@@ -17,19 +17,15 @@ class NewsParser:
 
     async def fetch_news(self, subject: str = "", period_days: int = 90,
                          indicators: List[str] = None, status_callback=None) -> List[Dict]:
-        """Асинхронный сбор новостей"""
         all_news = []
         since_date = datetime.now() - timedelta(days=period_days)
 
-        # Параллельно парсим все источники
         tasks = []
         for source in self.sources:
             tasks.append(self._parse_source(source, subject, since_date, indicators))
 
-        # Ждём завершения всех задач
         results = await asyncio.gather(*tasks)
 
-        # Собираем все новости
         for source_news in results:
             all_news.extend(source_news)
             if status_callback and source_news:
@@ -44,7 +40,6 @@ class NewsParser:
         return all_news
 
     async def _parse_source(self, source, subject, since_date, indicators):
-        """Парсит один источник"""
         news = []
         try:
             feed = feedparser.parse(source["url"])
@@ -57,11 +52,9 @@ class NewsParser:
                 summary = entry.get("summary", "")
                 text = (title + " " + summary).lower()
 
-                # Фильтрация по региону
                 if subject and subject.lower() not in text:
                     continue
 
-                # Фильтрация по показателям из БД
                 if indicators:
                     has_match = any(ind.lower() in text for ind in indicators)
                     if not has_match:

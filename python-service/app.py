@@ -50,10 +50,6 @@ def predict(payload: MultiPredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================
-# WebSocket для новостей (с динамическими индикаторами!)
-# ============================================================
-# WebSocket для новостей
 @app.websocket("/ws/news")
 async def websocket_news(websocket: WebSocket):
     await websocket.accept()
@@ -65,15 +61,13 @@ async def websocket_news(websocket: WebSocket):
 
         await websocket.send_text(json.dumps({"phase": "START", "message": "Начинаем сбор новостей..."}))
 
-        # Получаем показатели из Java
         indicators = get_indicators_from_java()
         await websocket.send_text(json.dumps({"phase": "INDICATORS",
                                               "message": f"Получено {len(indicators)} показателей"}))
 
-        # ✅ Асинхронно собираем новости (параллельно!)
         all_news = await get_news_summary_raw(
             subject, period, indicators,
-            status_callback=websocket.send_text  # ✅ Теперь можно передавать awaitable!
+            status_callback=websocket.send_text
         )
 
         if not all_news:
@@ -83,7 +77,6 @@ async def websocket_news(websocket: WebSocket):
 
         await websocket.send_text(json.dumps({"phase": "FOUND", "message": f"Найдено {len(all_news)} новостей"}))
 
-        # Анализ через GigaChat
         await websocket.send_text(
             json.dumps({"phase": "ANALYZING", "message": "Анализируем важность новостей через AI..."}))
 
@@ -110,9 +103,6 @@ async def websocket_news(websocket: WebSocket):
         await websocket.send_text(json.dumps({"phase": "ERROR", "message": str(e)}))
 
 
-# ============================================================
-# Вспомогательная функция: получает показатели из Java-бэка
-# ============================================================
 def get_indicators_from_java():
     """Запрашивает список показателей из Java-бэка"""
     try:
@@ -121,12 +111,9 @@ def get_indicators_from_java():
             return response.json()
     except Exception as e:
         print(f"Ошибка получения показателей из Java: {e}")
-    return []  # Если Java недоступен — возвращаем пустой список
+    return []
 
 
-# ============================================================
-# Остальные эндпоинты
-# ============================================================
 @app.post("/generate-text")
 def generate_text(data: Dict[str, Any]):
     try:

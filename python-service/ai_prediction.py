@@ -206,11 +206,7 @@ def compare_models(data: dict[str, dict[str, float]], n: int) -> pd.DataFrame:
 
             if isinstance(future_prediction, pd.DataFrame):
                 if "yhat" in future_prediction.columns:
-                    future_prediction = (
-                        future_prediction[["ds", "yhat"]]
-                        .set_index("ds")["yhat"]
-                        .iloc[-n:]
-                    )
+                    future_prediction = (future_prediction[["ds", "yhat"]].set_index("ds")["yhat"].iloc[-n:])
                 else:
                     future_prediction = future_prediction.iloc[:, 0]
 
