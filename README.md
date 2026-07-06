@@ -10,3 +10,9 @@
 > python app.py
 
 **Порт:** `http://localhost:5000`
+
+**Запуск фронта**
+
+>npm install
+>
+>npm run dev
