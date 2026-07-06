@@ -108,6 +108,27 @@
   stroke-dasharray: 4 3;
 }
 
+/* Модальные окна — анимации входа */
+@keyframes modal-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
 /* Уважаем prefers-reduced-motion для ВСЕХ анимаций приложения. */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -4,7 +4,7 @@ import { useSessionStore } from '@/shared/store/useSessionStore'
 import { useGraphStore } from '@/domains/business-graph/store/useGraphStore'
 import { useScenarioStore } from '@/domains/scenarios/store/useScenarioStore'
 import { PageHeader } from '@/shared/ui/PageHeader'
-import { Card, CardBody, CardHeader, CardTitle, Select, Input, Button } from '@/shared/ui'
+import { Card, CardBody, CardHeader, CardTitle, Select, Input, Button, ConfirmDialog, AlertDialog } from '@/shared/ui'
 import { usePrefersReducedMotion } from '@/shared/hooks/usePrefersReducedMotion'
 import {
     LineChart,
@@ -41,6 +41,15 @@ export function OverviewPage() {
     const [tableSearchTerm, setTableSearchTerm] = useState('')
     const [isCleaning, setIsCleaning] = useState(false)
 
+    // Состояния модальных окон
+    const [showConfirmClean, setShowConfirmClean] = useState(false)
+    const [alertDialog, setAlertDialog] = useState<{
+        open: boolean
+        title: string
+        message: string
+        variant: 'success' | 'danger' | 'warning' | 'info'
+    }>({ open: false, title: '', message: '', variant: 'info' })
+
     useEffect(() => {
         loadFacts()
     }, [])
@@ -51,30 +60,40 @@ export function OverviewPage() {
         }
     }, [indicators])
 
-    const handleCleanDatabase = async () => {
+    const handleCleanDatabase = () => {
         if (!user || user.role !== 'admin') {
-            alert('Только администратор может очищать базу данных')
+            setAlertDialog({
+                open: true,
+                title: 'Доступ запрещён',
+                message: 'Только администратор может очищать базу данных.',
+                variant: 'warning',
+            })
             return
         }
+        setShowConfirmClean(true)
+    }
 
-        const confirmed = confirm(
-            '⚠️ ВНИМАНИЕ!\n\n' +
-            'Вы уверены, что хотите очистить всю базу данных?\n' +
-            'Все загруженные факты, сценарии и граф будут удалены без возможности восстановления.\n\n' +
-            'Это действие НЕЛЬЗЯ отменить.'
-        )
-
-        if (!confirmed) return
-
+    const executeCleanDatabase = async () => {
+        setShowConfirmClean(false)
         setIsCleaning(true)
         try {
             const result = await api.cleanDatabase()
             resetGraph()
             clearScenarios()
             await refresh()
-            alert(result.message || 'База данных успешно очищена')
+            setAlertDialog({
+                open: true,
+                title: 'Очистка завершена',
+                message: result.message || 'База данных успешно очищена.',
+                variant: 'success',
+            })
         } catch (e) {
-            alert(e instanceof Error ? e.message : 'Ошибка при очистке базы данных')
+            setAlertDialog({
+                open: true,
+                title: 'Ошибка',
+                message: e instanceof Error ? e.message : 'Ошибка при очистке базы данных.',
+                variant: 'danger',
+            })
         } finally {
             setIsCleaning(false)
         }
@@ -451,6 +470,34 @@ export function OverviewPage() {
                     </div>
                 </CardBody>
             </Card>
+
+            {/* Модальное окно подтверждения очистки БД */}
+            <ConfirmDialog
+                open={showConfirmClean}
+                onClose={() => setShowConfirmClean(false)}
+                onConfirm={executeCleanDatabase}
+                title="Очистить базу данных?"
+                confirmLabel="Да, очистить"
+                cancelLabel="Отмена"
+                variant="danger"
+                loading={isCleaning}
+            >
+                <p className="mb-2">
+                    Все загруженные факты, сценарии и граф будут
+                    <span className="text-accent-red font-medium"> удалены без возможности восстановления</span>.
+                </p>
+                <p>Это действие <strong>нельзя отменить</strong>.</p>
+            </ConfirmDialog>
+
+            {/* Модальное окно результата (успех / ошибка / предупреждение) */}
+            <AlertDialog
+                open={alertDialog.open}
+                onClose={() => setAlertDialog(prev => ({ ...prev, open: false }))}
+                title={alertDialog.title}
+                variant={alertDialog.variant}
+            >
+                <p>{alertDialog.message}</p>
+            </AlertDialog>
         </div>
     )
 }
