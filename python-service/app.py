@@ -137,13 +137,12 @@ async def generate_news(data: Dict[str, Any]):
     try:
         subject = data.get('subject', '')
         period = data.get('period', 90)
-        indicators = get_indicators_from_java()
-        # 👇 ДОБАВИТЬ await
-        news = await get_news_summary_raw(subject, period, indicators)
-        return {"news": news[:5] if news else []}
+        # indicators not passed to parser — strict filter was blocking all results
+        news = await get_news_summary_raw(subject, period)
+        return {"news": news[:10] if news else []}
     except Exception as e:
         return {"news": [
-            {"title": "Ошибка", "summary": str(e), "source": "Система", "date": "", "url": "", "impact": "neutral"}]}
+            {"title": "\u041e\u0448\u0438\u0431\u043a\u0430", "summary": str(e), "source": "\u0421\u0438\u0441\u0442\u0435\u043c\u0430", "date": "", "url": "", "impact": "neutral"}]}
 
 @app.get("/health")
 def health():

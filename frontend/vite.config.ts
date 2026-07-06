@@ -17,6 +17,11 @@ export default defineConfig({
                 target: 'http://localhost:8080',
                 changeOrigin: true,
             },
+            // WebSocket для новостей — напрямую к Python-сервису
+            '/ws/news': {
+                target: 'ws://localhost:5000',
+                ws: true,
+            },
             '/ws': {
                 target: 'ws://localhost:8080',
                 ws: true,
