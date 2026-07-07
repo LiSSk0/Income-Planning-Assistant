@@ -40,6 +40,13 @@ const FORECAST_MODE_LABELS: Record<string, string> = {
     croston: 'Кростон (для редких событий)',
 }
 
+// Человекочитаемые названия методов расчёта
+const METHOD_LABELS: Record<string, string> = {
+    'growth-rate': 'По темпам роста',
+    'avg-3m': 'Среднее за 3 мес',
+    'avg-6m': 'Среднее за 6 мес',
+}
+
 export function ScenariosPage() {
     const reduced = usePrefersReducedMotion()
     const { indicators, periods, loadFacts } = useDatasetStore()
@@ -301,8 +308,8 @@ export function ScenariosPage() {
                                 {mapScenario ? (
                                     <div className="grid grid-cols-2 gap-2 text-sm">
                                         <div><span className="text-text-secondary">Показатель:</span> {mapScenario.params.targetIndicator}</div>
-                                        <div><span className="text-text-secondary">Метод:</span> {mapScenario.params.method}</div>
-                                        <div><span className="text-text-secondary">Модель:</span> {mapScenario.params.forecastMode || 'best'}</div>
+                                        <div><span className="text-text-secondary">Метод:</span> {METHOD_LABELS[mapScenario.params.method] ?? mapScenario.params.method}</div>
+                                        <div><span className="text-text-secondary">Модель:</span> {FORECAST_MODE_LABELS[mapScenario.params.forecastMode || 'best'] ?? mapScenario.params.forecastMode}</div>
                                         <div><span className="text-text-secondary">Период:</span> {mapScenario.params.periodFrom}–{mapScenario.params.horizonMonths} мес</div>
                                         <div><span className="text-text-secondary">СКО (RMSE):</span> {mapScenario.growthRateStd?.toFixed(3) || '—'}</div>
                                     </div>

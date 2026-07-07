@@ -7,6 +7,7 @@ interface DatasetState {
     facts: FactRow[]
     indicators: string[]
     subjects: string[]
+    districts: string[]
     periods: string[]
     selectedIndicator: string
     loading: boolean
@@ -24,6 +25,7 @@ export const useDatasetStore = create<DatasetState>((set, get) => ({
     facts: [],
     indicators: [],
     subjects: [],
+    districts: [],
     periods: [],
     selectedIndicator: 'Доход банка',
     loading: false,
@@ -43,12 +45,14 @@ export const useDatasetStore = create<DatasetState>((set, get) => ({
             const facts = await api.getFacts()
             const indicators = uniq(facts.map((f) => f.indicator))
             const subjects = uniq(facts.map((f) => f.subject))
+            const districts = uniq(facts.map((f) => f.district)).filter(Boolean)
             const periods = uniq(facts.map((f) => f.period)).sort()
 
             set({
                 facts,
                 indicators,
                 subjects,
+                districts,
                 periods,
                 loading: false,
                 hasData: facts.length > 0,
@@ -74,6 +78,7 @@ export const useDatasetStore = create<DatasetState>((set, get) => ({
             facts: [],
             indicators: [],
             subjects: [],
+            districts: [],
             periods: [],
             loading: false,
             error: null,

@@ -137,8 +137,11 @@ async def generate_news(data: Dict[str, Any]):
     try:
         subject = data.get('subject', '')
         period = data.get('period', 90)
-        # indicators not passed to parser — strict filter was blocking all results
-        news = await get_news_summary_raw(subject, period)
+        # Показатели передаём в парсер, чтобы новости соответствовали теме
+        # данных. Фильтр по теме мягкий (по корням слов + доменное
+        # расширение), поэтому не «съедает» все результаты, как раньше.
+        indicators = data.get('indicators') or get_indicators_from_java()
+        news = await get_news_summary_raw(subject, period, indicators)
         return {"news": news[:10] if news else []}
     except Exception as e:
         return {"news": [

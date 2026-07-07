@@ -10,4 +10,4 @@ python_dateutil
 Requests
 scikit_learn
 statsmodels
-uvicorn
+uvicorn[standard]

@@ -5,6 +5,7 @@ import com.example.universityanalytics.entity.FactEntity;
 import com.example.universityanalytics.entity.ScenarioEntity;
 import com.example.universityanalytics.repository.FactRepository;
 import com.example.universityanalytics.repository.ScenarioRepository;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -109,6 +110,7 @@ public class ScenarioService {
 
         // 4. Прогнозируем только нужные базовые показатели
         Map<String, List<ScenarioPointDto>> baseForecast = new HashMap<>();
+        Double targetRmse = null;
         for (String indicatorName : neededIndicators) {
             Map<Integer, Map<Integer, Double>> history = buildHistory(allFacts, indicatorName);
             if (history.isEmpty()) {
@@ -123,14 +125,28 @@ public class ScenarioService {
             var result = pythonClientService.callPredict(null, indicatorName, horizon, forecastMode, history);
             log.info("Прогноз для '{}' завершён за {} мс", indicatorName, System.currentTimeMillis() - start);
 
-            if (result != null && result.has("forecast")) {
-                var forecast = result.path("forecast");
+            // Python в режимах best/all возвращает узел {models, best_model};
+            // при выборе конкретной модели — объект с forecast. Нормализуем.
+            JsonNode model = extractModel(result);
+            if (model != null && model.has("forecast")) {
+                // Ключи прогноза приходят как "yyyy-MM-dd"; приводим к "yyyy-MM".
+                Map<String, Double> byMonth = new HashMap<>();
+                model.path("forecast").fields().forEachRemaining(e -> {
+                    String key = e.getKey();
+                    String ym = key.length() >= 7 ? key.substring(0, 7) : key;
+                    byMonth.put(ym, e.getValue().asDouble(0.0));
+                });
                 List<ScenarioPointDto> points = new ArrayList<>();
                 for (String month : futureMonths) {
-                    double val = forecast.path(month).asDouble(0.0) * rateBias;
+                    double val = byMonth.getOrDefault(month, 0.0) * rateBias;
                     points.add(new ScenarioPointDto(month, val));
                 }
                 baseForecast.put(indicatorName, points);
+
+                if (targetRmse == null) {
+                    double rmse = model.path("metrics").path("RMSE").asDouble(0.0);
+                    if (rmse > 0) targetRmse = rmse;
+                }
             }
         }
 
@@ -147,22 +163,12 @@ public class ScenarioService {
             r.setValue(r.getValue() * rateBias);
         }
 
-        // 8. СКО (RMSE из лучшей модели)
-        Double growthRateStd = 0.0;
-        // Пытаемся получить RMSE из прогноза первого показателя
-        for (String ind : neededIndicators) {
-            Map<Integer, Map<Integer, Double>> history = buildHistory(allFacts, ind);
-            if (history.isEmpty()) continue;
-            String forecastMode = params.getForecastMode() != null ? params.getForecastMode() : "best";
-            var result = pythonClientService.callPredict(null, ind, horizon, forecastMode, history);
-            if (result != null && result.has("metrics")) {
-                growthRateStd = result.path("metrics").path("RMSE").asDouble(0.0);
-                break;
-            }
-        }
+        // 8. СКО (RMSE лучшей модели, посчитан в цикле прогноза выше)
+        Double growthRateStd = targetRmse != null ? targetRmse : 0.0;
 
         // 9. Драйверы
-        List<ScenarioDriverDto> drivers = buildDrivers(allForecast, params.getTargetIndicator());
+        Map<String, String> unitByIndicator = buildUnitMap(allFacts);
+        List<ScenarioDriverDto> drivers = buildDrivers(graph, allForecast, params.getTargetIndicator(), unitByIndicator);
 
         // 10. Собираем DTO
         ScenarioDto dto = new ScenarioDto();
@@ -337,19 +343,75 @@ public class ScenarioService {
         return list;
     }
 
-    private List<ScenarioDriverDto> buildDrivers(Map<String, List<ScenarioPointDto>> forecast, String target) {
+    /** Нормализует ответ Python: узел {models, best_model} → лучшая модель; объект с forecast — как есть. */
+    private JsonNode extractModel(JsonNode result) {
+        if (result == null) return null;
+        if (result.has("forecast")) return result;
+        if (result.has("models")) {
+            JsonNode models = result.path("models");
+            for (JsonNode m : models) {
+                if (m.path("best").asBoolean(false)) return m;
+            }
+            if (models.size() > 0) return models.get(0);
+        }
+        return null;
+    }
+
+    /** Единицы измерения по показателю из фактов. */
+    private Map<String, String> buildUnitMap(List<FactEntity> facts) {
+        Map<String, String> map = new HashMap<>();
+        for (FactEntity f : facts) {
+            if (f.getUnit() != null) map.putIfAbsent(f.getIndicator(), f.getUnit());
+        }
+        return map;
+    }
+
+    /** Прямые драйверы целевого показателя — источники входящих рёбер графа. */
+    private List<String> directDrivers(BusinessGraphDto graph, String targetIndicator) {
+        Map<String, GraphNodeDto> nodeMap = graph.getNodes().stream()
+                .collect(Collectors.toMap(GraphNodeDto::getId, n -> n));
+        String targetId = nodeMap.entrySet().stream()
+                .filter(e -> e.getValue().getIndicator().equals(targetIndicator))
+                .map(Map.Entry::getKey).findFirst().orElse(null);
+        if (targetId == null) return Collections.emptyList();
+        List<String> result = new ArrayList<>();
+        for (GraphEdgeDto e : graph.getEdges()) {
+            if (targetId.equals(e.getTarget())) {
+                GraphNodeDto src = nodeMap.get(e.getSource());
+                if (src != null) result.add(src.getIndicator());
+            }
+        }
+        return result;
+    }
+
+    private List<ScenarioDriverDto> buildDrivers(BusinessGraphDto graph,
+                                                 Map<String, List<ScenarioPointDto>> forecast,
+                                                 String target,
+                                                 Map<String, String> unitByIndicator) {
+        // Драйверы целевого показателя — его прямые входы по графу.
+        // У базового показателя (без входящих рёбер) драйверов нет — секция скрывается.
+        List<String> driverIndicators = directDrivers(graph, target);
+
+        Map<String, Double> avgByIndicator = new LinkedHashMap<>();
+        for (String ind : driverIndicators) {
+            List<ScenarioPointDto> pts = forecast.get(ind);
+            if (pts == null || pts.isEmpty()) continue;
+            double avg = pts.stream().mapToDouble(ScenarioPointDto::getValue).average().orElse(0.0);
+            avgByIndicator.put(ind, avg);
+        }
+
+        double totalAbs = avgByIndicator.values().stream().mapToDouble(Math::abs).sum();
         List<ScenarioDriverDto> drivers = new ArrayList<>();
-        for (Map.Entry<String, List<ScenarioPointDto>> entry : forecast.entrySet()) {
-            if (entry.getKey().equals(target)) continue;
+        for (Map.Entry<String, Double> e : avgByIndicator.entrySet()) {
             ScenarioDriverDto dto = new ScenarioDriverDto();
-            dto.setIndicator(entry.getKey());
-            double avg = entry.getValue().stream().mapToDouble(ScenarioPointDto::getValue).average().orElse(0);
-            dto.setValue(avg);
-            dto.setUnit("руб");
-            dto.setContributionPct(5.0);
+            dto.setIndicator(e.getKey());
+            dto.setValue(e.getValue());
+            dto.setUnit(unitByIndicator.getOrDefault(e.getKey(), "руб"));
+            double pct = totalAbs > 0 ? Math.abs(e.getValue()) / totalAbs * 100.0 : 0.0;
+            dto.setContributionPct(Math.round(pct * 10.0) / 10.0);
             drivers.add(dto);
         }
-        drivers.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
+        drivers.sort((a, b) -> Double.compare(Math.abs(b.getValue()), Math.abs(a.getValue())));
         return drivers.stream().limit(5).collect(Collectors.toList());
     }
 

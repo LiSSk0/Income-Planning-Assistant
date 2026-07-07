@@ -25,9 +25,9 @@ interface NewsState {
     newsPhase: NewsPhase
     newsPhaseMessage: string
 
-    fetchNews: (subject?: string, period?: number) => void
+    fetchNews: (region?: string, period?: number) => void
     fetchAnomalies: (subject?: string, threshold?: number, force?: boolean) => Promise<void>
-    refreshAll: (subject?: string, period?: number, threshold?: number) => void
+    refreshAll: (region?: string, subject?: string, period?: number, threshold?: number) => void
     toggleShowAnomalies: () => void
     clear: () => void
 }
@@ -136,9 +136,9 @@ export const useNewsStore = create<NewsState>((set, get) => ({
         }
     },
 
-    refreshAll: (subject, period = 90, threshold = 2.0) => {
+    refreshAll: (region, subject, period = 90, threshold = 2.0) => {
         set({ refreshing: true, error: null })
-        get().fetchNews(subject, period)
+        get().fetchNews(region, period)
         get().fetchAnomalies(subject, threshold, true).finally(() => {
             set({ refreshing: false })
         })
