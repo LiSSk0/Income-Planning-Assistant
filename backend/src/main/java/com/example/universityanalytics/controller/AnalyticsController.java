@@ -149,6 +149,39 @@ public class AnalyticsController {
         return ResponseEntity.ok(anomalyService.detectAnomalies(subject, indicator, threshold));
     }
 
+    @GetMapping("/anomalies/status")
+    public ResponseEntity<Map<String, Boolean>> getAnomalyStatus(@RequestParam(required = false) String userId) {
+        String uid = userId != null ? userId : "default";
+        boolean active = anomalyService.hasActiveCorrections(uid);
+        return ResponseEntity.ok(Map.of("active", active));
+    }
+
+    @PostMapping("/anomalies/replace")
+    public ResponseEntity<Map<String, Object>> replaceAnomalies(
+            @RequestParam(required = false) String subject,
+            @RequestParam(required = false) String indicator,
+            @RequestParam(defaultValue = "2.5") Double threshold,
+            @RequestParam(required = false) String userId) {
+        String uid = userId != null ? userId : "default";
+        int count = anomalyService.replaceAnomalies(subject, indicator, threshold, uid);
+        return ResponseEntity.ok(Map.of(
+                "status", "ok",
+                "replaced", count,
+                "message", count + " аномалий заменены"
+        ));
+    }
+
+    @PostMapping("/anomalies/restore")
+    public ResponseEntity<Map<String, Object>> restoreAnomalies(@RequestParam(required = false) String userId) {
+        String uid = userId != null ? userId : "default";
+        int count = anomalyService.restoreAnomalies(uid);
+        return ResponseEntity.ok(Map.of(
+                "status", "ok",
+                "restored", count,
+                "message", count + " аномалий восстановлены"
+        ));
+    }
+
     // ========== Новости (с кешированием через NewsService) ==========
     @GetMapping("/news")
     public ResponseEntity<List<NewsDto>> getNewsGet(
@@ -240,6 +273,7 @@ public class AnalyticsController {
     @DeleteMapping("/clean")
     public ResponseEntity<Map<String, String>> cleanDatabase() {
         factRepository.deleteAll();
+        anomalyService.clearAllCorrections();
         graphService.deleteGraph();
         return ResponseEntity.ok(Map.of("status", "ok", "message", "База данных очищена"));
     }

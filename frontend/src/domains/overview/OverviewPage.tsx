@@ -1,8 +1,10 @@
+// src/domains/overview/OverviewPage.tsx
 import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useDatasetStore } from '@/shared/store/useDatasetStore'
 import { useSessionStore } from '@/shared/store/useSessionStore'
 import { useGraphStore } from '@/domains/business-graph/store/useGraphStore'
 import { useScenarioStore } from '@/domains/scenarios/store/useScenarioStore'
+import { useAnomalyStore } from '@/domains/ai-insights/store/useAnomalyStore'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { Card, CardBody, CardHeader, CardTitle, Select, Input, Button, ConfirmDialog, AlertDialog } from '@/shared/ui'
 import { usePrefersReducedMotion } from '@/shared/hooks/usePrefersReducedMotion'
@@ -17,7 +19,6 @@ import {
     ResponsiveContainer,
 } from 'recharts'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from '@tanstack/react-table'
 import { formatPeriod, formatNumber } from '@/shared/lib/format'
 import { chartTheme } from '@/shared/ui/chartTheme'
 import { api } from '@/shared/lib/api'
@@ -31,13 +32,14 @@ export function OverviewPage() {
     const { user } = useSessionStore()
     const resetGraph = useGraphStore((s) => s.reset)
     const clearScenarios = useScenarioStore((s) => s.clear)
+    const { hasCorrections, checkStatus, clear: clearAnomalies } = useAnomalyStore()
 
-    // ✅ Фильтры ТОЛЬКО для графика
+    // Фильтры для графика
     const [selectedSubject, setSelectedSubject] = useState<string>('')
     const [visibleIndicators, setVisibleIndicators] = useState<Set<string>>(new Set())
     const [rangeMonths, setRangeMonths] = useState<number>(12)
 
-    // ✅ Поиск ТОЛЬКО для таблицы (перенесён в шапку таблицы)
+    // Поиск для таблицы
     const [tableSearchTerm, setTableSearchTerm] = useState('')
     const [isCleaning, setIsCleaning] = useState(false)
 
@@ -49,6 +51,18 @@ export function OverviewPage() {
         message: string
         variant: 'success' | 'danger' | 'warning' | 'info'
     }>({ open: false, title: '', message: '', variant: 'info' })
+
+    // Проверка статуса коррекций при монтировании
+    useEffect(() => {
+        checkStatus()
+    }, [])
+
+    // При изменении hasCorrections обновляем данные в таблице (если активны коррекции)
+    useEffect(() => {
+        if (hasCorrections) {
+            refresh()
+        }
+    }, [hasCorrections])
 
     useEffect(() => {
         loadFacts()
@@ -78,8 +92,10 @@ export function OverviewPage() {
         setIsCleaning(true)
         try {
             const result = await api.cleanDatabase()
+            // Очищаем все связанные сторы
             resetGraph()
             clearScenarios()
+            clearAnomalies() // Очищаем коррекции
             await refresh()
             setAlertDialog({
                 open: true,
@@ -99,7 +115,7 @@ export function OverviewPage() {
         }
     }
 
-    // ✅ Данные ДЛЯ ТАБЛИЦЫ - все факты (БЕЗ фильтрации)
+    // Данные для таблицы
     const allPeriods = useMemo(() => {
         return Array.from(new Set(facts.map(f => f.period))).sort()
     }, [facts])
@@ -112,46 +128,35 @@ export function OverviewPage() {
         return Array.from(new Set(facts.map(f => f.indicator))).sort()
     }, [facts])
 
-    // ✅ Строим сводную таблицу: каждая строка = период + субъект, колонки = ВСЕ показатели
+    // Сводная таблица
     const pivotData = useMemo(() => {
         const result: Array<Record<string, any>> = []
-
         for (const period of allPeriods) {
             for (const subject of allSubjects) {
-                const row: Record<string, any> = {
-                    period,
-                    subject,
-                }
-
+                const row: Record<string, any> = { period, subject }
                 for (const indicator of allIndicators) {
                     const fact = facts.find(
                         f => f.period === period && f.subject === subject && f.indicator === indicator
                     )
                     row[indicator] = fact?.value ?? null
                 }
-
                 result.push(row)
             }
         }
-
         return result
     }, [allPeriods, allSubjects, allIndicators, facts])
 
-    // ✅ Колонки таблицы (ВСЕ показатели)
+    // Колонки таблицы
     const tableColumns = useMemo(() => {
         const cols: Array<{ id: string; header: string; accessor: string; width: number; align?: 'left' | 'right' }> = []
-
         cols.push({ id: 'period', header: 'Период', accessor: 'period', width: 100, align: 'left' })
         cols.push({ id: 'subject', header: 'Регион', accessor: 'subject', width: 160, align: 'left' })
-
         for (const indicator of allIndicators) {
             let shortHeader = indicator
             if (indicator.length > 24) {
                 shortHeader = indicator.slice(0, 22) + '…'
             }
-
             const width = Math.min(Math.max(indicator.length * 7 + 30, 90), 180)
-
             cols.push({
                 id: indicator,
                 header: indicator,
@@ -161,15 +166,13 @@ export function OverviewPage() {
                 align: 'right',
             })
         }
-
         return cols
     }, [allIndicators])
 
-    // ✅ Поиск по таблице (по отформатированному периоду)
+    // Поиск по таблице
     const filteredPivotData = useMemo(() => {
         if (!tableSearchTerm.trim()) return pivotData
         const q = tableSearchTerm.trim().toLowerCase()
-
         return pivotData.filter(row => {
             const formattedPeriod = formatPeriod(row.period).toLowerCase()
             if (formattedPeriod.includes(q)) return true
@@ -184,7 +187,7 @@ export function OverviewPage() {
         })
     }, [pivotData, tableSearchTerm, allIndicators])
 
-    // ✅ Виртуализация таблицы
+    // Виртуализация таблицы
     const parentRef = useRef<HTMLDivElement>(null)
     const virtualizer = useVirtualizer({
         count: filteredPivotData.length,
@@ -193,13 +196,12 @@ export function OverviewPage() {
         overscan: 20,
     })
 
-    // ✅ Данные для графика (с фильтрацией)
+    // Данные для графика (с фильтрацией)
     const chartData = useMemo(() => {
         let filtered = facts
         if (selectedSubject) {
             filtered = filtered.filter(f => f.subject === selectedSubject)
         }
-
         const map = new Map<string, Record<string, number>>()
         for (const f of filtered) {
             if (!visibleIndicators.has(f.indicator)) continue
@@ -207,7 +209,6 @@ export function OverviewPage() {
             const row = map.get(f.period)!
             row[f.indicator] = (row[f.indicator] || 0) + f.value
         }
-
         let sorted = Array.from(map.values()).sort((a, b) => a.period.localeCompare(b.period))
         if (rangeMonths > 0 && rangeMonths < sorted.length) {
             sorted = sorted.slice(-rangeMonths)
@@ -226,7 +227,6 @@ export function OverviewPage() {
 
     const isAdmin = user?.role === 'admin'
 
-    // Фиксированные колонки (период + регион)
     const fixedColumns = tableColumns.filter(c => c.id === 'period' || c.id === 'subject')
     const scrollColumns = tableColumns.filter(c => c.id !== 'period' && c.id !== 'subject')
 
@@ -251,7 +251,7 @@ export function OverviewPage() {
                 }
             />
 
-            {/* ✅ Фильтры ТОЛЬКО для графика */}
+            {/* Фильтры графика */}
             <div className="mb-4 flex flex-wrap items-center gap-3">
                 <span className="text-sm text-text-secondary font-medium">Фильтры графика:</span>
                 <div className="flex items-center gap-2">
@@ -281,6 +281,9 @@ export function OverviewPage() {
                         <option value="0">Все</option>
                     </Select>
                 </div>
+                {hasCorrections && (
+                    <span className="text-xs text-accent-amber">⚠ Аномалии заменены</span>
+                )}
             </div>
 
             {/* График */}
@@ -332,7 +335,7 @@ export function OverviewPage() {
                 </CardBody>
             </Card>
 
-            {/* ✅ Таблица с поиском в шапке */}
+            {/* Таблица */}
             <Card>
                 <CardHeader className="flex flex-wrap items-center justify-between gap-3">
                     <CardTitle>Сводная таблица данных</CardTitle>
@@ -351,6 +354,7 @@ export function OverviewPage() {
                             {filteredPivotData.length} строк · {allPeriods.length} периодов · {allSubjects.length} регионов · {allIndicators.length} показателей
                             {tableSearchTerm && ` (фильтр: "${tableSearchTerm}")`}
                             {isAdmin && ' · 🔑 Админ'}
+                            {hasCorrections && ' · 🔄 аномалии заменены'}
                         </span>
                     </div>
                 </CardHeader>
@@ -361,7 +365,6 @@ export function OverviewPage() {
                     >
                         <div className="relative min-w-max">
                             <table className="border-collapse text-sm">
-                                {/* ШАПКА */}
                                 <thead className="sticky top-0 z-20 bg-bg-elevated">
                                     <tr>
                                         {fixedColumns.map(col => (
@@ -399,8 +402,6 @@ export function OverviewPage() {
                                         ))}
                                     </tr>
                                 </thead>
-
-                                {/* ТЕЛО */}
                                 <tbody style={{ position: 'relative', height: `${virtualizer.getTotalSize()}px` }}>
                                     {virtualizer.getVirtualItems().map((vi) => {
                                         const row = filteredPivotData[vi.index]
@@ -440,7 +441,6 @@ export function OverviewPage() {
                                                         </td>
                                                     )
                                                 })}
-
                                                 {scrollColumns.map(col => {
                                                     const value = row[col.accessor]
                                                     return (
@@ -483,13 +483,13 @@ export function OverviewPage() {
                 loading={isCleaning}
             >
                 <p className="mb-2">
-                    Все загруженные факты, сценарии и граф будут
-                    <span className="text-accent-red font-medium"> удалены без возможности восстановления</span>.
+                    Все загруженные факты, сценарии, граф и <span className="text-accent-red font-medium">коррекции аномалий</span> будут
+                    удалены без возможности восстановления.
                 </p>
                 <p>Это действие <strong>нельзя отменить</strong>.</p>
             </ConfirmDialog>
 
-            {/* Модальное окно результата (успех / ошибка / предупреждение) */}
+            {/* Модальное окно результата */}
             <AlertDialog
                 open={alertDialog.open}
                 onClose={() => setAlertDialog(prev => ({ ...prev, open: false }))}

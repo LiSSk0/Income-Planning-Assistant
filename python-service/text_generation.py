@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-AUTH_TOKEN = os.getenv("AUTH_TOKEN")
+AUTH_TOKEN = os.getenv("key")
 
 if not AUTH_TOKEN:
     logger.error("AUTH_TOKEN не найден в .env файле")

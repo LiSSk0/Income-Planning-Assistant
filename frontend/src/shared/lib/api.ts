@@ -113,6 +113,24 @@ export const api = {
         return request<AnomalyCard[]>(`/api/anomalies?${params.toString()}`)
     },
 
+    getAnomalyStatus: (userId?: string) =>
+        request<{ active: boolean }>(`/api/anomalies/status${userId ? `?userId=${userId}` : ''}`),
+
+    replaceAnomalies: (subject?: string, indicator?: string, threshold?: number, userId?: string) => {
+        const params = new URLSearchParams()
+        if (subject) params.append('subject', subject)
+        if (indicator) params.append('indicator', indicator)
+        if (threshold) params.append('threshold', String(threshold))
+        if (userId) params.append('userId', userId)
+        return request<{ status: string; replaced: number; message: string }>(`/api/anomalies/replace?${params.toString()}`, { method: 'POST' })
+    },
+
+    restoreAnomalies: (userId?: string) => {
+        const params = new URLSearchParams()
+        if (userId) params.append('userId', userId)
+        return request<{ status: string; restored: number; message: string }>(`/api/anomalies/restore?${params.toString()}`, { method: 'POST' })
+    },
+
     // ========== Новости ==========
     getNews: (subject?: string, period: number = 90) => {
         const params = new URLSearchParams()

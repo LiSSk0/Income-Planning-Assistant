@@ -1,7 +1,7 @@
 // src/domains/data-ingestion/UploadPage.tsx
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { RotateCcw, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { RotateCcw, CheckCircle2, AlertTriangle, Lock } from 'lucide-react'
 import { Button, Card, CardBody } from '@/shared/ui'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { api } from '@/shared/lib/api'
@@ -10,6 +10,7 @@ import { useDatasetStore } from '@/shared/store/useDatasetStore'
 import { useGraphStore } from '@/domains/business-graph/store/useGraphStore'
 import { useScenarioStore } from '@/domains/scenarios/store/useScenarioStore'
 import { useNewsStore } from '@/domains/ai-insights/store/useNewsStore'
+import { useAnomalyStore } from '@/domains/ai-insights/store/useAnomalyStore'
 import { Dropzone } from './components/Dropzone'
 import { EntityReview } from './components/EntityReview'
 import { DataTablePreview } from './components/DataTablePreview'
@@ -35,6 +36,19 @@ export function UploadPage() {
     const clearScenarios = useScenarioStore((s) => s.clear)
     const clearGraph = useGraphStore((s) => s.clear)
     const clearNewsCache = useNewsStore((s) => s.clearCache)
+
+    // Стор для аномалий
+    const { hasCorrections, checkStatus, clear: clearAnomalies } = useAnomalyStore()
+    const [loadingStatus, setLoadingStatus] = useState(true)
+
+    // Проверка статуса коррекций при монтировании
+    useEffect(() => {
+        const check = async () => {
+            await checkStatus()
+            setLoadingStatus(false)
+        }
+        check()
+    }, [])
 
     const buildGraphFromData = () => {
         if (facts.length === 0 || indicators.length === 0) {
@@ -73,18 +87,25 @@ export function UploadPage() {
     }
 
     async function handleFile(file: File) {
+        // Блокируем загрузку, если активны коррекции
+        if (hasCorrections) {
+            setErrorMessage('Невозможно загрузить данные: активна замена аномалий. Сначала восстановите исходные данные на вкладке «AI-аналитика».')
+            setScreen('error')
+            return
+        }
+
         setFileName(file.name)
         setScreen('uploading')
         setErrorMessage('')
         try {
             const [res] = await Promise.all([api.uploadAnalytics(file), wait(MIN_LOADER_MS)])
 
-            // Сбрасываем старые данные
+            // Очищаем все кеши и состояния
             reset()
             clearGraph()
             clearScenarios()
-            // Очищаем кеш новостей и аномалий
             clearNewsCache()
+            clearAnomalies() // Очищаем также стор аномалий
 
             await refresh()
             buildGraphFromData()
@@ -115,6 +136,15 @@ export function UploadPage() {
             transition: { duration: 0.25 },
         }
 
+    if (loadingStatus) {
+        return (
+            <div className="flex items-center justify-center py-16">
+                <div className="h-8 w-8 animate-spin rounded-full border-4 border-accent-green border-t-transparent" />
+                <span className="ml-3 text-text-secondary">Проверка состояния данных...</span>
+            </div>
+        )
+    }
+
     return (
         <div>
             <PageHeader
@@ -130,10 +160,24 @@ export function UploadPage() {
                 }
             />
 
+            {hasCorrections && (
+                <Card className="mb-4 border-accent-amber/30 bg-accent-amber/5">
+                    <CardBody className="flex items-center gap-3 py-3">
+                        <Lock className="h-5 w-5 text-accent-amber" />
+                        <div>
+                            <p className="text-sm font-medium text-text-primary">Загрузка данных заблокирована</p>
+                            <p className="text-xs text-text-secondary">
+                                Активна замена аномалий. Сначала восстановите исходные данные на вкладке «AI-аналитика».
+                            </p>
+                        </div>
+                    </CardBody>
+                </Card>
+            )}
+
             <AnimatePresence mode="wait">
                 {screen === 'idle' && (
                     <motion.div key="idle" {...fade}>
-                        <Dropzone onFile={handleFile} />
+                        <Dropzone onFile={handleFile} disabled={hasCorrections} />
                     </motion.div>
                 )}
 
@@ -199,7 +243,6 @@ export function UploadPage() {
 
                 {screen === 'success' && (
                     <motion.div key="success" {...fade} className="space-y-4">
-                        {/* Плашка успеха */}
                         <motion.div
                             initial={prefersReduced ? false : { scale: 0.98, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
@@ -220,7 +263,6 @@ export function UploadPage() {
                             </Card>
                         </motion.div>
 
-                        {/* Бонус: предпросмотр распознанных сущностей и таблицы */}
                         <EntityReview onChange={setMapping} />
 
                         <Card>

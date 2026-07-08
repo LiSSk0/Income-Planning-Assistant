@@ -1,14 +1,15 @@
 // src/domains/ai-insights/AiInsightsPage.tsx
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Newspaper, AlertTriangle, Filter, RefreshCw, Loader2, Wifi, Brain, Search as SearchIcon, CheckCircle, RotateCcw } from 'lucide-react'
-import { Card, CardBody, Skeleton, EmptyState, Select, Button, Tag, Toggle } from '@/shared/ui'
+import { Newspaper, AlertTriangle, Filter, RefreshCw, Loader2, Wifi, Brain, Search as SearchIcon, CheckCircle, RotateCcw, Calculator } from 'lucide-react'
+import { Card, CardBody, Skeleton, EmptyState, Select, Button, Tag } from '@/shared/ui'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { usePrefersReducedMotion } from '@/shared/hooks/usePrefersReducedMotion'
 import { useDatasetStore } from '@/shared/store/useDatasetStore'
 import { AnomalyCardItem } from './components/AnomalyCardItem'
 import { NewsCardItem } from './components/NewsCardItem'
 import { useNewsStore, type NewsPhase } from './store/useNewsStore'
+import { useAnomalyStore } from './store/useAnomalyStore'
 
 const PHASE_STEPS: { phase: NewsPhase; label: string; icon: React.ReactNode }[] = [
     { phase: 'CONNECTING', label: 'Подключение', icon: <Wifi className="h-3.5 w-3.5" /> },
@@ -81,29 +82,40 @@ export function AiInsightsPage() {
     const { subjects, loadFacts } = useDatasetStore()
     const {
         news,
-        anomalies,
         loadingNews,
-        loadingAnomalies,
         refreshing,
-        error,
-        fetchAnomalies,
+        error: newsError,
         fetchNews,
-        showAnomalies,
-        toggleShowAnomalies,
         newsPhase,
         newsPhaseMessage,
     } = useNewsStore()
 
+    const {
+        anomalies,
+        threshold,
+        loading: anomaliesLoading,
+        hasCorrections,
+        isReplacing,
+        isRestoring,
+        setThreshold,
+        calculate,
+        replace,
+        restore,
+        checkStatus,
+    } = useAnomalyStore()
+
     const [selectedSubject, setSelectedSubject] = useState<string>('')
     const [newsCount, setNewsCount] = useState<number>(5)
-    const [threshold, setThreshold] = useState<number>(2.0)
     const [initialLoaded, setInitialLoaded] = useState(false)
 
     useEffect(() => {
         loadFacts()
+        checkStatus()
+        // При первом рендере рассчитываем аномалии с текущим порогом
+        calculate(selectedSubject || undefined)
     }, [])
 
-    // Загружаем новости ТОЛЬКО ПРИ ПЕРВОМ РЕНДЕРЕ
+    // Загружаем новости только при первом рендере
     useEffect(() => {
         if (!initialLoaded && !loadingNews) {
             fetchNews(selectedSubject || undefined, newsCount, false)
@@ -111,19 +123,22 @@ export function AiInsightsPage() {
         }
     }, [initialLoaded, loadingNews])
 
-    // Аномалии пересчитываем при изменении региона или порога
-    useEffect(() => {
-        if (initialLoaded) {
-            fetchAnomalies(selectedSubject || undefined, threshold)
-        }
-    }, [selectedSubject, threshold, initialLoaded])
+    const handleCalculateAnomalies = () => {
+        calculate(selectedSubject || undefined)
+    }
 
     const handleRefreshNews = () => {
         fetchNews(selectedSubject || undefined, newsCount, true)
     }
 
-    const handleRecalcAnomalies = () => {
-        fetchAnomalies(selectedSubject || undefined, threshold, true)
+    const handleReplaceAnomalies = async () => {
+        await replace(selectedSubject || undefined)
+        // После замены аномалии очищены, данные обновлены, ничего дополнительно не делаем
+    }
+
+    const handleRestoreAnomalies = async () => {
+        await restore()
+        // После восстановления данные обновлены, аномалии пересчитаны
     }
 
     const motionProps = (i: number) =>
@@ -135,9 +150,9 @@ export function AiInsightsPage() {
                 transition: { duration: 0.25, delay: i * 0.05 },
             }
 
-    const anomaliesToShow = showAnomalies ? anomalies : []
     const hasNews = news.length > 0
     const isInProgress = loadingNews && newsPhase !== 'DONE' && newsPhase !== 'ERROR' && newsPhase !== 'IDLE'
+    const isAnomalyLoading = anomaliesLoading || isReplacing || isRestoring
 
     return (
         <div>
@@ -156,7 +171,8 @@ export function AiInsightsPage() {
                     value={selectedSubject}
                     onChange={e => {
                         setSelectedSubject(e.target.value)
-                        // При смене региона автоматически обновляем аномалии, но НЕ новости
+                        // При смене региона автоматически пересчитываем аномалии
+                        calculate(e.target.value || undefined)
                     }}
                     className="w-52"
                 >
@@ -175,7 +191,7 @@ export function AiInsightsPage() {
                             <Newspaper className="h-4 w-4 text-text-secondary" />
                             Новости ({news.length})
                             {isInProgress && <span className="ml-2 text-xs text-accent-green">{newsPhaseMessage}</span>}
-                            {error && !hasNews && !isInProgress && <span className="ml-2 text-xs text-accent-red">(ошибка)</span>}
+                            {newsError && !hasNews && !isInProgress && <span className="ml-2 text-xs text-accent-red">(ошибка)</span>}
                         </h3>
                         <div className="flex items-center gap-2 flex-wrap">
                             <Select
@@ -218,8 +234,8 @@ export function AiInsightsPage() {
                                     <NewsCardItem news={n} />
                                 </motion.div>
                             ))}
-                            {error && hasNews && (
-                                <p className="text-xs text-accent-amber">{error}</p>
+                            {newsError && hasNews && (
+                                <p className="text-xs text-accent-amber">{newsError}</p>
                             )}
                         </div>
                     ) : !isInProgress ? (
@@ -228,7 +244,7 @@ export function AiInsightsPage() {
                                 <EmptyState
                                     icon={<Newspaper className="h-8 w-8" />}
                                     title="Новостей не найдено"
-                                    description={error || 'Новости по вашей теме не найдены. Попробуйте обновить позже.'}
+                                    description={newsError || 'Новости по вашей теме не найдены. Попробуйте обновить позже.'}
                                 />
                             </CardBody>
                         </Card>
@@ -240,46 +256,73 @@ export function AiInsightsPage() {
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                         <h3 className="flex items-center gap-2 text-sm font-semibold tracking-wide text-text-primary">
                             <AlertTriangle className="h-4 w-4 text-text-secondary" />
-                            Аномалии ({anomaliesToShow.length})
-                            {!showAnomalies && anomalies.length > 0 && (
-                                <Tag tone="amber">показаны не все</Tag>
+                            Аномалии ({anomalies.length})
+                            {hasCorrections && (
+                                <Tag tone="amber">аномалии заменены</Tag>
                             )}
                         </h3>
                         <div className="flex items-center gap-2">
                             <div className="flex items-center gap-2">
                                 <span className="text-xs text-text-secondary">σ:</span>
                                 <input
-                                    type="range"
+                                    type="number"
                                     min={1}
-                                    max={4}
+                                    max={5}
                                     step={0.1}
                                     value={threshold}
-                                    onChange={e => setThreshold(Number(e.target.value))}
-                                    className="w-20 accent-accent-green"
+                                    onChange={e => {
+                                        const val = parseFloat(e.target.value)
+                                        if (!isNaN(val) && val >= 1 && val <= 5) {
+                                            setThreshold(val)
+                                        }
+                                    }}
+                                    className="w-16 rounded border border-border bg-bg-elevated px-2 py-1 text-sm text-text-primary"
+                                    disabled={hasCorrections}
                                 />
                                 <Tag tone="neutral" className="text-xs">{threshold.toFixed(1)}</Tag>
                             </div>
-                            <Button variant="secondary" size="sm" onClick={handleRecalcAnomalies} disabled={loadingAnomalies}>
-                                <RotateCcw className={'h-4 w-4 ' + (loadingAnomalies ? 'animate-spin' : '')} />
-                                Пересчитать
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={handleCalculateAnomalies}
+                                disabled={isAnomalyLoading || hasCorrections}
+                            >
+                                <Calculator className="h-4 w-4" />
+                                Рассчитать
                             </Button>
-                            <Toggle
-                                checked={showAnomalies}
-                                onChange={toggleShowAnomalies}
-                                label=""
-                            />
+                            {!hasCorrections ? (
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={handleReplaceAnomalies}
+                                    disabled={isReplacing || anomaliesLoading}
+                                >
+                                    <RotateCcw className={'h-4 w-4 ' + (isReplacing ? 'animate-spin' : '')} />
+                                    {isReplacing ? 'Замена...' : 'Убрать аномалии'}
+                                </Button>
+                            ) : (
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={handleRestoreAnomalies}
+                                    disabled={isRestoring}
+                                >
+                                    <RotateCcw className={'h-4 w-4 ' + (isRestoring ? 'animate-spin' : '')} />
+                                    {isRestoring ? 'Восстановление...' : 'Восстановить исходные'}
+                                </Button>
+                            )}
                         </div>
                     </div>
 
-                    {loadingAnomalies && anomalies.length === 0 ? (
+                    {isAnomalyLoading && anomalies.length === 0 ? (
                         <div className="space-y-3">
                             {Array.from({ length: 4 }).map((_, i) => (
                                 <Skeleton key={i} className="h-24 w-full" />
                             ))}
                         </div>
-                    ) : anomaliesToShow.length ? (
+                    ) : anomalies.length ? (
                         <div className="space-y-3">
-                            {anomaliesToShow.map((a, i) => (
+                            {anomalies.map((a, i) => (
                                 <motion.div key={a.id} {...motionProps(i)}>
                                     <AnomalyCardItem anomaly={a} />
                                 </motion.div>
@@ -290,8 +333,8 @@ export function AiInsightsPage() {
                             <CardBody className="pt-5">
                                 <EmptyState
                                     icon={<AlertTriangle className="h-8 w-8" />}
-                                    title={showAnomalies ? 'Аномалий не найдено' : 'Аномалии скрыты'}
-                                    description={showAnomalies ? 'При пороге ' + threshold + 'σ отклонений не обнаружено' : 'Включите показ аномалий'}
+                                    title="Аномалий не найдено"
+                                    description={hasCorrections ? 'Аномалии заменены на очищенные значения' : 'При выбранных параметрах отклонений не обнаружено.'}
                                 />
                             </CardBody>
                         </Card>
