@@ -1,0 +1,39 @@
+flowchart TB
+    subgraph Python["Python-сервис (FastAPI)"]
+        App[app.py]
+        AIPred[ai_prediction.py]
+        NewsParser[news_parser.py]
+        TextGen[text_generation.py]
+    end
+
+    subgraph External["Внешние системы"]
+        JavaBackend[Java-бэкенд :8080]
+        RSS[(RSS-ленты)]
+        GigaChat[GigaChat API]
+    end
+
+    subgraph Clients["Клиенты"]
+        Frontend[Фронтенд]
+    end
+
+    %% Общие зависимости модулей
+    App -->|использует| AIPred
+    App -->|использует| NewsParser
+    App -->|использует| TextGen
+
+    %% Внешние вызовы
+    App -->|HTTP GET /api/indicators| JavaBackend
+    NewsParser -->|парсит| RSS
+    TextGen -->|вызывает| GigaChat
+
+    %% Клиентские запросы
+    Frontend -->|REST / WebSocket| App
+
+    %% Стилизация
+    classDef python fill:#e8f5e9,stroke:#2e7d32
+    classDef external fill:#fff3e0,stroke:#e65100
+    classDef client fill:#e3f2fd,stroke:#1565c0
+
+    class App,AIPred,NewsParser,TextGen python
+    class JavaBackend,RSS,GigaChat external
+    class Frontend client
