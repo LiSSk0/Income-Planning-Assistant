@@ -1,12 +1,16 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, List
 from ai_prediction import compare_models
-from text_generation import gigachat_text, gigachat_analyze_news
+from text_generation import gigachat_score_news, rank_news_by_heuristics
 from news_parser import get_news_summary_raw
 import json
 import requests
 from fastapi.middleware.cors import CORSMiddleware
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="University Analytics AI Service")
 
@@ -17,6 +21,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_generate_news_cache: Dict[str, tuple[float, Any]] = {}
+_CACHE_TTL_SEC = 120
 
 
 class MultiPredictionRequest(BaseModel):
@@ -34,7 +41,6 @@ def predict(payload: MultiPredictionRequest):
             models_output = []
             for _, row in df.iterrows():
                 forecast = row["forecast"]
-                # Series -> JSON
                 forecast_json = {
                     str(k.date()): float(v)
                     for k, v in forecast.items()
@@ -62,90 +68,117 @@ def predict(payload: MultiPredictionRequest):
 @app.websocket("/ws/news")
 async def websocket_news(websocket: WebSocket):
     await websocket.accept()
+    logger.info("WebSocket /ws/news connected")
     try:
         data = await websocket.receive_text()
         params = json.loads(data)
         subject = params.get('subject', '')
-        period = params.get('period', 90)
+        count = params.get('count', 5)
 
-        await websocket.send_text(json.dumps({"phase": "START", "message": "Начинаем сбор новостей..."}))
+        await websocket.send_text(json.dumps({
+            "phase": "START",
+            "message": "Начинаем сбор новостей..."
+        }))
 
         indicators = get_indicators_from_java()
-        await websocket.send_text(json.dumps({"phase": "INDICATORS",
-                                              "message": f"Получено {len(indicators)} показателей"}))
+        await websocket.send_text(json.dumps({
+            "phase": "INDICATORS",
+            "message": f"Получено {len(indicators)} показателей"
+        }))
 
-        all_news = await get_news_summary_raw(
-            subject, period, indicators,
-            status_callback=websocket.send_text
-        )
+        all_news = await get_news_summary_raw(status_callback=websocket.send_text)
 
         if not all_news:
-            await websocket.send_text(json.dumps({"phase": "DONE", "message": "Новостей не найдено", "data": []}))
+            await websocket.send_text(json.dumps({
+                "phase": "DONE",
+                "message": "Новостей не найдено",
+                "data": []
+            }))
             await websocket.close()
             return
 
-        await websocket.send_text(json.dumps({"phase": "FOUND", "message": f"Найдено {len(all_news)} новостей"}))
+        await websocket.send_text(json.dumps({
+            "phase": "FOUND",
+            "message": f"Найдено {len(all_news)} новостей"
+        }))
 
-        await websocket.send_text(
-            json.dumps({"phase": "ANALYZING", "message": "Анализируем важность новостей через AI..."}))
+        await websocket.send_text(json.dumps({
+            "phase": "ANALYZING",
+            "message": "Анализируем новости с помощью AI..."
+        }))
 
-        top_news = all_news[:20]
-        news_text = "Вот список новостей:\n\n"
-        for i, news in enumerate(top_news, 1):
-            news_text += f"{i}. {news['title']} ({news['source']}, {news['date']})\n"
-            news_text += f"   {news['summary'][:200]}...\n\n"
+        # Пробуем GigaChat
+        analyzed = gigachat_score_news(all_news, subject, indicators, count)
 
-        analyzed = gigachat_analyze_news(news_text, subject, indicators)
-
-        if analyzed:
-            await websocket.send_text(json.dumps({"phase": "DONE",
-                                                  "message": f"Выбрано {len(analyzed)} самых важных новостей",
-                                                  "data": analyzed}))
+        if analyzed and len(analyzed) > 0:
+            # Дополняем URL
+            for item in analyzed:
+                if not item.get('url'):
+                    for orig in all_news:
+                        if orig['title'] == item['title']:
+                            item['url'] = orig.get('url', '')
+                            break
+                if not item.get('date'):
+                    item['date'] = ''
+                if not item.get('source'):
+                    item['source'] = 'Источник'
+            result_news = analyzed
         else:
-            await websocket.send_text(json.dumps({"phase": "DONE",
-                                                  "message": f"GigaChat недоступен, возвращаем {len(top_news[:5])} свежих новостей",
-                                                  "data": top_news[:5]}))
+            logger.warning("GigaChat не вернул результат, используем эвристику")
+            result_news = rank_news_by_heuristics(all_news, subject, indicators, limit=count)
+
+        await websocket.send_text(json.dumps({
+            "phase": "DONE",
+            "message": f"Выбрано {len(result_news)} новостей",
+            "data": result_news
+        }))
 
     except WebSocketDisconnect:
-        print("WebSocket disconnected")
+        logger.info("WebSocket /ws/news disconnected")
     except Exception as e:
-        await websocket.send_text(json.dumps({"phase": "ERROR", "message": str(e)}))
+        logger.error(f"WebSocket error: {e}")
+        await websocket.send_text(json.dumps({
+            "phase": "ERROR",
+            "message": str(e)
+        }))
 
 
-def get_indicators_from_java():
+def get_indicators_from_java() -> List[str]:
     try:
         response = requests.get("http://localhost:8080/api/indicators", timeout=5)
         if response.status_code == 200:
             return response.json()
     except Exception as e:
-        print(f"Ошибка получения показателей из Java: {e}")
+        logger.error(f"Ошибка получения показателей из Java: {e}")
     return []
-
-
-@app.post("/generate-text")
-def generate_text(data: Dict[str, Any]):
-    try:
-        context = f"Данные по региону {data.get('subject')}. Тренд: {data.get('trend')}. Прогноз: {data.get('forecast')}"
-        text = gigachat_text(context)
-        return {"summary": text}
-    except Exception as e:
-        return {"summary": f"Ошибка: {str(e)}"}
 
 
 @app.post("/generate-news")
 async def generate_news(data: Dict[str, Any]):
     try:
         subject = data.get('subject', '')
-        period = data.get('period', 90)
-        # Показатели передаём в парсер, чтобы новости соответствовали теме
-        # данных. Фильтр по теме мягкий (по корням слов + доменное
-        # расширение), поэтому не «съедает» все результаты, как раньше.
+        count = data.get('count', 5)
         indicators = data.get('indicators') or get_indicators_from_java()
-        news = await get_news_summary_raw(subject, period, indicators)
-        return {"news": news[:10] if news else []}
+
+        cache_key = f"news_{subject}"
+        if cache_key in _generate_news_cache:
+            cached_time, cached_data = _generate_news_cache[cache_key]
+            if time.time() - cached_time < _CACHE_TTL_SEC:
+                return cached_data
+
+        news = await get_news_summary_raw()
+        analyzed = gigachat_score_news(news, subject, indicators, count)
+        if analyzed:
+            result = {"news": analyzed}
+        else:
+            result = {"news": rank_news_by_heuristics(news, subject, indicators, limit=count)}
+
+        _generate_news_cache[cache_key] = (time.time(), result)
+        return result
     except Exception as e:
-        return {"news": [
-            {"title": "\u041e\u0448\u0438\u0431\u043a\u0430", "summary": str(e), "source": "\u0421\u0438\u0441\u0442\u0435\u043c\u0430", "date": "", "url": "", "impact": "neutral"}]}
+        logger.error(f"generate-news error: {e}")
+        return {"news": []}
+
 
 @app.get("/health")
 def health():
@@ -154,5 +187,4 @@ def health():
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("app:app", host="127.0.0.1", port=5000, reload=True)

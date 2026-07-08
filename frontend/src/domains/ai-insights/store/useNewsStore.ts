@@ -1,3 +1,4 @@
+// src/domains/ai-insights/store/useNewsStore.ts
 import { create } from 'zustand'
 import { api } from '@/shared/lib/api'
 import type { AnomalyCard, NewsCard } from '@/shared/lib/api-types'
@@ -24,17 +25,21 @@ interface NewsState {
     lastFetchedAnomalies: number | null
     newsPhase: NewsPhase
     newsPhaseMessage: string
+    lastFetchParams: { subject: string; count: number } | null
 
-    fetchNews: (region?: string, period?: number) => void
+    fetchNews: (region?: string, count?: number, force?: boolean) => void
     fetchAnomalies: (subject?: string, threshold?: number, force?: boolean) => Promise<void>
-    refreshAll: (region?: string, subject?: string, period?: number, threshold?: number) => void
+    refreshAll: (region?: string, subject?: string, threshold?: number) => void
     toggleShowAnomalies: () => void
     clear: () => void
+    clearCache: () => void
 }
 
-const CACHE_TTL = 5 * 60 * 1000
+const CACHE_TTL = 2 * 60 * 1000
 
 let activeWs: WebSocket | null = null
+let pendingRequest: { subject: string; count: number } | null = null
+let requestId = 0
 
 function buildWsUrl(): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -52,18 +57,53 @@ export const useNewsStore = create<NewsState>((set, get) => ({
     lastFetchedAnomalies: null,
     newsPhase: 'IDLE' as NewsPhase,
     newsPhaseMessage: '',
+    lastFetchParams: null,
 
-    fetchNews: (subject, period = 90) => {
+    fetchNews: (region, count = 5, force = false) => {
+        const subject = region || ''
+        const params = { subject, count }
+
+        // Проверяем кеш в sessionStorage
+        const cacheKey = `news_ws_${subject}|${count}`
+        if (!force) {
+            const cached = sessionStorage.getItem(cacheKey)
+            if (cached) {
+                try {
+                    const { data, timestamp } = JSON.parse(cached)
+                    if (Date.now() - timestamp < CACHE_TTL && data && data.length > 0) {
+                        set({
+                            news: data,
+                            loadingNews: false,
+                            newsPhase: 'DONE',
+                            newsPhaseMessage: `Загружено ${data.length} новостей (кеш)`,
+                            error: null,
+                        })
+                        return
+                    }
+                } catch (e) { /* ignore */ }
+            }
+        }
+
+        // Если уже идёт загрузка с такими же параметрами — не дублируем
+        if (pendingRequest &&
+            pendingRequest.subject === params.subject &&
+            pendingRequest.count === params.count) {
+            return
+        }
+        pendingRequest = params
+
         if (activeWs) {
             try { activeWs.close() } catch { /* noop */ }
             activeWs = null
         }
 
+        const reqId = ++requestId
+
         set({
             loadingNews: true,
             error: null,
             newsPhase: 'CONNECTING' as NewsPhase,
-            newsPhaseMessage: '\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u043a \u0441\u0435\u0440\u0432\u0435\u0440\u0443\u2026',
+            newsPhaseMessage: 'Подключение к серверу…',
         })
 
         try {
@@ -71,17 +111,20 @@ export const useNewsStore = create<NewsState>((set, get) => ({
             activeWs = ws
 
             ws.onopen = () => {
-                ws.send(JSON.stringify({ subject: subject || '', period }))
+                ws.send(JSON.stringify({ subject, count }))
                 set({
                     newsPhase: 'START' as NewsPhase,
-                    newsPhaseMessage: '\u041d\u0430\u0447\u0438\u043d\u0430\u0435\u043c \u0441\u0431\u043e\u0440 \u043d\u043e\u0432\u043e\u0441\u0442\u0435\u0439\u2026',
+                    newsPhaseMessage: 'Начинаем сбор новостей…',
                 })
             }
 
             ws.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data)
-                    handleWsPhase(msg, ws, set, subject, period)
+                    if (msg.requestId && msg.requestId !== reqId) {
+                        return
+                    }
+                    handleWsPhase(msg, ws, set, subject, count, reqId)
                 } catch (err) {
                     console.error('WS parse error:', err)
                 }
@@ -89,22 +132,25 @@ export const useNewsStore = create<NewsState>((set, get) => ({
 
             ws.onerror = () => {
                 activeWs = null
+                pendingRequest = null
                 set({
                     newsPhase: 'START' as NewsPhase,
-                    newsPhaseMessage: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0447\u0435\u0440\u0435\u0437 API\u2026',
+                    newsPhaseMessage: 'Загрузка через API…',
                 })
-                fetchNewsRest(subject, period)
+                fetchNewsRest(subject, count)
             }
 
             ws.onclose = () => {
                 activeWs = null
+                pendingRequest = null
                 const { newsPhase } = get()
                 if (newsPhase !== 'DONE' && newsPhase !== 'ERROR' && newsPhase !== 'IDLE') {
-                    fetchNewsRest(subject, period)
+                    fetchNewsRest(subject, count)
                 }
             }
         } catch {
-            fetchNewsRest(subject, period)
+            pendingRequest = null
+            fetchNewsRest(subject, count)
         }
     },
 
@@ -131,14 +177,14 @@ export const useNewsStore = create<NewsState>((set, get) => ({
             }
             set({
                 loadingAnomalies: false,
-                error: e instanceof Error ? e.message : '\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438 \u0430\u043d\u043e\u043c\u0430\u043b\u0438\u0439',
+                error: e instanceof Error ? e.message : 'Ошибка загрузки аномалий',
             })
         }
     },
 
-    refreshAll: (region, subject, period = 90, threshold = 2.0) => {
+    refreshAll: (region, subject, threshold = 2.0) => {
         set({ refreshing: true, error: null })
-        get().fetchNews(region, period)
+        get().fetchNews(region, 5, true)
         get().fetchAnomalies(subject, threshold, true).finally(() => {
             set({ refreshing: false })
         })
@@ -157,7 +203,33 @@ export const useNewsStore = create<NewsState>((set, get) => ({
         lastFetchedAnomalies: null,
         newsPhase: 'IDLE' as NewsPhase,
         newsPhaseMessage: '',
+        lastFetchParams: null,
     }),
+
+    clearCache: () => {
+        set({
+            news: [],
+            anomalies: [],
+            loadingNews: false,
+            loadingAnomalies: false,
+            refreshing: false,
+            error: null,
+            newsPhase: 'IDLE' as NewsPhase,
+            newsPhaseMessage: '',
+            lastFetchParams: null,
+        })
+        const keys = Object.keys(sessionStorage)
+        for (const key of keys) {
+            if (key.startsWith('news_') || key.startsWith('anomalies_')) {
+                sessionStorage.removeItem(key)
+            }
+        }
+        if (activeWs) {
+            try { activeWs.close() } catch { /* noop */ }
+            activeWs = null
+        }
+        pendingRequest = null
+    },
 }))
 
 /* ---------- helpers ---------- */
@@ -165,9 +237,9 @@ export const useNewsStore = create<NewsState>((set, get) => ({
 function mapRawToCards(raw: any[]): NewsCard[] {
     return raw.map((n: any, i: number) => ({
         id: n.id || 'news-' + Date.now() + '-' + i,
-        title: n.title || '\u041d\u043e\u0432\u043e\u0441\u0442\u044c',
+        title: n.title || 'Новость',
         summary: n.summary || '',
-        source: n.source || '\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a',
+        source: n.source || 'Источник',
         date: n.date || '',
         url: n.url || '',
         impact: (['positive', 'negative', 'neutral'].includes(n.impact)
@@ -181,8 +253,9 @@ function handleWsPhase(
     msg: any,
     ws: WebSocket,
     set: (s: Partial<NewsState>) => void,
-    subject: string | undefined,
-    period: number,
+    subject: string,
+    count: number,
+    reqId: number,
 ) {
     const phase = msg.phase as string
 
@@ -197,17 +270,18 @@ function handleWsPhase(
             news: cards,
             loadingNews: false,
             newsPhase: 'DONE',
-            newsPhaseMessage: msg.message || '\u0417\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u043e ' + cards.length + ' \u043d\u043e\u0432\u043e\u0441\u0442\u0435\u0439',
-            error: cards.length === 0 ? '\u041d\u043e\u0432\u043e\u0441\u0442\u0435\u0439 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e' : null,
+            newsPhaseMessage: msg.message || `Загружено ${cards.length} новостей`,
+            error: cards.length === 0 ? 'Новостей не найдено' : null,
         })
         try {
             sessionStorage.setItem(
-                'news_ws_' + (subject || 'all') + '|' + period,
-                JSON.stringify(cards),
+                `news_ws_${subject}|${count}`,
+                JSON.stringify({ data: cards, timestamp: Date.now() })
             )
         } catch { /* quota */ }
         ws.close()
         activeWs = null
+        pendingRequest = null
         return
     }
 
@@ -215,45 +289,54 @@ function handleWsPhase(
         set({
             loadingNews: false,
             newsPhase: 'ERROR',
-            newsPhaseMessage: msg.message || '\u041e\u0448\u0438\u0431\u043a\u0430',
-            error: msg.message || '\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438 \u043d\u043e\u0432\u043e\u0441\u0442\u0435\u0439',
+            newsPhaseMessage: msg.message || 'Ошибка',
+            error: msg.message || 'Ошибка загрузки новостей',
         })
         ws.close()
         activeWs = null
+        pendingRequest = null
     }
 }
 
-async function fetchNewsRest(subject?: string, period: number = 90) {
+async function fetchNewsRest(subject?: string, count: number = 5) {
     const set = useNewsStore.setState
     try {
-        const data = await api.getNews(subject, period)
-        const cards = mapRawToCards(data)
+        const data = await api.getNews(subject)
+        const cards = mapRawToCards(data).slice(0, count)
         set({
             news: cards,
             loadingNews: false,
             newsPhase: 'DONE' as NewsPhase,
-            newsPhaseMessage: '\u0417\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u043e ' + cards.length + ' \u043d\u043e\u0432\u043e\u0441\u0442\u0435\u0439',
-            error: cards.length === 0 ? '\u041d\u043e\u0432\u043e\u0441\u0442\u0435\u0439 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e' : null,
+            newsPhaseMessage: `Загружено ${cards.length} новостей`,
+            error: cards.length === 0 ? 'Новостей не найдено' : null,
         })
+        sessionStorage.setItem(
+            `news_ws_${subject || ''}|${count}`,
+            JSON.stringify({ data: cards, timestamp: Date.now() })
+        )
+        pendingRequest = null
     } catch (e) {
-        const cached = sessionStorage.getItem('news_ws_' + (subject || 'all') + '|' + period)
+        const cached = sessionStorage.getItem(`news_ws_${subject || ''}|${count}`)
         if (cached) {
             try {
+                const { data } = JSON.parse(cached)
                 set({
-                    news: JSON.parse(cached),
+                    news: data,
                     loadingNews: false,
                     newsPhase: 'DONE' as NewsPhase,
-                    newsPhaseMessage: '\u041a\u0435\u0448\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0435 \u0434\u0430\u043d\u043d\u044b\u0435',
-                    error: '\u0421\u0435\u0440\u0432\u0435\u0440 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d, \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u044b \u043a\u0435\u0448\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0435 \u0434\u0430\u043d\u043d\u044b\u0435',
+                    newsPhaseMessage: 'Кешированные данные',
+                    error: 'Сервер недоступен, показаны кешированные данные',
                 })
+                pendingRequest = null
                 return
             } catch { /* noop */ }
         }
         set({
             loadingNews: false,
             newsPhase: 'ERROR' as NewsPhase,
-            newsPhaseMessage: '\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438',
-            error: e instanceof Error ? e.message : '\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438 \u043d\u043e\u0432\u043e\u0441\u0442\u0435\u0439',
+            newsPhaseMessage: 'Ошибка загрузки',
+            error: e instanceof Error ? e.message : 'Ошибка загрузки новостей',
         })
+        pendingRequest = null
     }
 }
