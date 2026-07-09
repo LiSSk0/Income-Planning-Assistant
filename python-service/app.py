@@ -36,11 +36,16 @@ def predict(payload: MultiPredictionRequest):
     try:
         result = {}
         for metric_name, metric_data in payload.data.items():
+            # logger.info(f"Прогноз для: {metric_name}, данные: {metric_data}")
             df = compare_models(metric_data, payload.n_periods)
+            if df is None or df.empty:
+                logger.warning(f"compare_models вернул None или пустой DF для {metric_name}")
+                result[metric_name] = {"models": [], "best_model": None}
+                continue
+
             models_output = []
             for rank, (_, row) in enumerate(df.iterrows(), start=1):
                 forecast = row["forecast"]
-
                 forecast_json = (
                     {
                         str(k.date()): float(v)
@@ -60,8 +65,14 @@ def predict(payload: MultiPredictionRequest):
                     "forecast": forecast_json,
                     "best": rank
                 })
+            result[metric_name] = {
+                "models": models_output,
+                "best_model": models_output[0]["name"] if models_output else None
+            }
+        # logger.info(f"Результат: {result}")
         return result
     except Exception as e:
+        logger.error(f"Ошибка в /predict: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

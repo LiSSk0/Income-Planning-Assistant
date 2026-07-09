@@ -58,59 +58,47 @@ public class PythonClientService {
             HttpEntity<String> entity = new HttpEntity<>(request.toString(), headers);
 
             long start = System.currentTimeMillis();
-            log.info("Отправка запроса в Python для '{}' с методом '{}'", indicator, method != null ? method : "best");
+            log.info("Отправка запроса в Python для '{}' (регион: {})", indicator, subject);
 
             ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
 
             log.info("Python ответ для '{}' за {} мс, статус {}", indicator, System.currentTimeMillis() - start, response.getStatusCode());
 
             if (response.getStatusCode() == HttpStatus.OK) {
-                JsonNode result = objectMapper.readTree(response.getBody());
-                JsonNode metricResult = result.path(indicator);
-                if (metricResult.has("models")) {
-                    JsonNode models = metricResult.path("models");
-                    if (method != null && !method.isEmpty() && !"best".equals(method) && !"all".equals(method)) {
-                        for (JsonNode model : models) {
-                            String modelName = model.path("name").asText("");
-                            String mappedName = mapModelName(modelName);
-                            if (method.equals(mappedName) || modelName.equalsIgnoreCase(method)) {
-                                log.info("Найдена модель '{}' для '{}'", modelName, indicator);
-                                return model;
-                            }
-                        }
-                        log.warn("Модель '{}' не найдена для '{}', берём лучшую", method, indicator);
-                        for (JsonNode model : models) {
-                            if (model.path("best").asBoolean(false)) {
-                                return model;
-                            }
-                        }
-                        if (models.size() > 0) {
-                            return models.get(0);
-                        }
-                    }
-                    return metricResult;
+                String body = response.getBody();
+                log.info("ПОЛНЫЙ ОТВЕТ PYTHON ДЛЯ {}: {}", indicator, body);
+
+                JsonNode root = objectMapper.readTree(body);
+
+                // Ищем models:
+                // 1. Сначала по имени индикатора: root.get(indicator).get("models")
+                // 2. Потом на верхнем уровне: root.get("models")
+                JsonNode modelsNode = null;
+                if (root.has(indicator) && root.path(indicator).has("models")) {
+                    modelsNode = root.path(indicator).path("models");
+                    log.info("Найдены models по индикатору '{}'", indicator);
+                } else if (root.has("models")) {
+                    modelsNode = root.path("models");
+                    log.info("Найдены models на верхнем уровне");
                 }
-                return result;
+
+                if (modelsNode != null && modelsNode.isArray() && modelsNode.size() > 0) {
+                    ObjectNode result = objectMapper.createObjectNode();
+                    result.set("models", modelsNode);
+                    log.info("Получено {} моделей для '{}'", modelsNode.size(), indicator);
+                    return result;
+                } else {
+                    log.warn("НЕ НАЙДЕНЫ MODELS для '{}' в ответе. ПОЛНЫЙ ОТВЕТ: {}", indicator, body);
+                    return null;
+                }
             } else {
                 log.error("Python вернул ошибку: {}", response.getStatusCode());
-                log.error("Тело ответа: {}", response.getBody());
+                return null;
             }
         } catch (Exception e) {
-            log.error("Ошибка при вызове Python для '{}': {}", indicator, e.getMessage());
+            log.error("Ошибка при вызове Python: {}", e.getMessage(), e);
+            return null;
         }
-        return null;
-    }
-
-    private String mapModelName(String pythonName) {
-        if (pythonName == null) return null;
-        String lower = pythonName.toLowerCase();
-        if (lower.contains("sarimax")) return "sarimax";
-        if (lower.contains("prophet")) return "prophet";
-        if (lower.contains("exponential") || lower.contains("smoothing")) return "exponential_smoothing";
-        if (lower.contains("stl")) return "stl";
-        if (lower.contains("ridge")) return "ridge";
-        if (lower.contains("croston")) return "croston";
-        return pythonName;
     }
 
     public JsonNode callGenerateText(Map<String, Object> data) {

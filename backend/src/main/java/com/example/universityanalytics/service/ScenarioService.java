@@ -22,13 +22,13 @@ import java.util.stream.Collectors;
 public class ScenarioService {
 
     private static final Logger log = LoggerFactory.getLogger(ScenarioService.class);
+    private static final String DEFAULT_USER = "default";
 
     private final ScenarioRepository scenarioRepository;
     private final FactRepository factRepository;
     private final PythonClientService pythonClientService;
     private final GraphService graphService;
     private final ObjectMapper objectMapper;
-    private static final String DEFAULT_USER = "default";
 
     public List<ScenarioDto> getScenarios() {
         return getScenarios(DEFAULT_USER);
@@ -40,261 +40,460 @@ public class ScenarioService {
     }
 
     @Transactional
+    public void deleteScenario(String id) {
+        scenarioRepository.deleteById(id);
+    }
+
+    @Transactional
     public ScenarioDto generateScenario(ScenarioParamsDto params) {
         return generateScenario(params, DEFAULT_USER);
     }
 
     @Transactional
     public ScenarioDto generateScenario(ScenarioParamsDto params, String userId) {
-        return generateScenarioInternal(params, userId, 1.0);
-    }
+        if (userId == null) userId = DEFAULT_USER;
 
-    @Transactional
-    public List<ScenarioDto> generateScenarios(ScenarioParamsDto params) {
-        return generateScenarios(params, DEFAULT_USER);
-    }
-
-    @Transactional
-    public List<ScenarioDto> generateScenarios(ScenarioParamsDto params, String userId) {
-        List<ScenarioDto> result = new ArrayList<>();
-
-        ScenarioDto base = generateScenarioInternal(params, userId, 1.0);
-        base.setKind("base");
-        base.setTitle(params.getName() + " (Базовый)");
-        result.add(base);
-
-        ScenarioDto opt = generateScenarioInternal(params, userId, 1.06);
-        opt.setKind("optimistic");
-        opt.setTitle(params.getName() + " (Оптимистичный)");
-        result.add(opt);
-
-        ScenarioDto cons = generateScenarioInternal(params, userId, 0.95);
-        cons.setKind("conservative");
-        cons.setTitle(params.getName() + " (Консервативный)");
-        result.add(cons);
-
-        return result;
-    }
-
-    @Transactional
-    public void deleteScenario(String id) {
-        scenarioRepository.deleteById(id);
-    }
-
-    // ===== ОСНОВНАЯ ЛОГИКА =====
-
-    private ScenarioDto generateScenarioInternal(ScenarioParamsDto params, String userId, double rateBias) {
-        // 1. Последний период
-        List<String> periods = factRepository.findAllPeriods();
-        if (periods.isEmpty()) throw new RuntimeException("Нет данных для прогноза");
-        String lastPeriod = periods.get(periods.size() - 1);
-        String[] parts = lastPeriod.split("-");
-        int lastYear = Integer.parseInt(parts[0]);
-        int lastMonth = Integer.parseInt(parts[1]);
-
-        int horizon = params.getHorizonMonths() != null ? params.getHorizonMonths() : 6;
-        int periodFrom = params.getPeriodFrom() != null ? params.getPeriodFrom() : 1;
-
-        // 2. Граф
-        BusinessGraphDto graph = graphService.getGraph(userId);
-        List<FactEntity> allFacts = factRepository.findAll();
-        String[] futureMonths = getFutureMonths(lastYear, lastMonth, horizon);
-
-        // 3. Определяем нужные показатели для целевого
-        Set<String> neededIndicators = findNeededIndicators(graph, params.getTargetIndicator());
-        log.info("Для целевого показателя '{}' нужны базовые: {}", params.getTargetIndicator(), neededIndicators);
-
-        if (neededIndicators.isEmpty()) {
-            throw new RuntimeException("Не найдены базовые показатели для целевого '" + params.getTargetIndicator() + "'");
+        // 1. Определяем список регионов
+        List<String> regions = params.getRegions();
+        if (regions == null || regions.isEmpty() || regions.contains("all")) {
+            regions = factRepository.findDistinctSubjects();
+        } else {
+            regions = regions.stream().filter(r -> !"all".equals(r)).collect(Collectors.toList());
+            if (regions.isEmpty()) {
+                regions = factRepository.findDistinctSubjects();
+            }
         }
 
-        // 4. Прогнозируем только нужные базовые показатели
-        Map<String, List<ScenarioPointDto>> baseForecast = new HashMap<>();
-        Double targetRmse = null;
-        for (String indicatorName : neededIndicators) {
-            Map<Integer, Map<Integer, Double>> history = buildHistory(allFacts, indicatorName);
-            if (history.isEmpty()) {
-                log.warn("Нет истории для показателя '{}', пропускаем", indicatorName);
+        log.info("Регионы для прогноза: {}", regions);
+
+        // 2. Получаем граф
+        BusinessGraphDto graph = graphService.getGraph(userId);
+        Map<String, GraphNodeDto> nodeMap = graph.getNodes().stream()
+                .collect(Collectors.toMap(GraphNodeDto::getId, n -> n));
+
+        // 3. Находим целевой узел
+        String targetId = nodeMap.entrySet().stream()
+                .filter(e -> e.getValue().getIndicator().equals(params.getTargetIndicator()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+
+        boolean isDerived = targetId != null && nodeMap.get(targetId).getIsDerived() != null && nodeMap.get(targetId).getIsDerived();
+        boolean useDirectForecast = params.getUseDirectForecast() != null && params.getUseDirectForecast();
+
+        // 4. Определяем, какие показатели прогнозировать напрямую
+        Set<String> baseIndicators = new HashSet<>();
+        boolean directForecast = useDirectForecast || !isDerived || targetId == null;
+        if (!directForecast) {
+            collectBaseIndicators(targetId, nodeMap, graph, baseIndicators);
+        } else {
+            baseIndicators.add(params.getTargetIndicator());
+        }
+
+        log.info("Для целевого {} базовые: {}", params.getTargetIndicator(), baseIndicators);
+
+        // 5. Для каждого региона и каждого базового показателя получаем прогнозы
+        Map<String, Map<String, List<ModelForecastDto>>> regionBaseForecasts = new LinkedHashMap<>();
+        Map<String, String> regionErrors = new HashMap<>();
+
+        for (String region : regions) {
+            log.info("Обработка региона: {}", region);
+            List<FactEntity> regionFacts = factRepository.findBySubject(region);
+            if (regionFacts.isEmpty()) {
+                regionErrors.put(region, "Нет данных для региона");
+                log.warn("Нет данных для региона: {}", region);
                 continue;
             }
 
-            String forecastMode = params.getForecastMode() != null ? params.getForecastMode() : "best";
-            long start = System.currentTimeMillis();
-            log.info("Прогноз для '{}' с моделью '{}'", indicatorName, forecastMode);
-
-            var result = pythonClientService.callPredict(null, indicatorName, horizon, forecastMode, history);
-            log.info("Прогноз для '{}' завершён за {} мс", indicatorName, System.currentTimeMillis() - start);
-
-            // Python в режимах best/all возвращает узел {models, best_model};
-            // при выборе конкретной модели — объект с forecast. Нормализуем.
-            JsonNode model = extractModel(result);
-            if (model != null && model.has("forecast")) {
-                // Ключи прогноза приходят как "yyyy-MM-dd"; приводим к "yyyy-MM".
-                Map<String, Double> byMonth = new HashMap<>();
-                model.path("forecast").fields().forEachRemaining(e -> {
-                    String key = e.getKey();
-                    String ym = key.length() >= 7 ? key.substring(0, 7) : key;
-                    byMonth.put(ym, e.getValue().asDouble(0.0));
-                });
-                List<ScenarioPointDto> points = new ArrayList<>();
-                for (String month : futureMonths) {
-                    double val = byMonth.getOrDefault(month, 0.0) * rateBias;
-                    points.add(new ScenarioPointDto(month, val));
+            Map<String, List<ModelForecastDto>> indicatorForecasts = new LinkedHashMap<>();
+            for (String indicator : baseIndicators) {
+                log.info("  Прогноз для показателя: {} в регионе {}", indicator, region);
+                List<ModelForecastDto> models = forecastIndicator(region, indicator, params.getHorizonMonths());
+                if (!models.isEmpty()) {
+                    indicatorForecasts.put(indicator, models);
+                    log.info("  Получено {} моделей для {} в {}", models.size(), indicator, region);
+                } else {
+                    log.warn("  Не удалось получить прогноз для {} в {}", indicator, region);
                 }
-                baseForecast.put(indicatorName, points);
+            }
 
-                if (targetRmse == null) {
-                    double rmse = model.path("metrics").path("RMSE").asDouble(0.0);
-                    if (rmse > 0) targetRmse = rmse;
+            if (!indicatorForecasts.isEmpty()) {
+                regionBaseForecasts.put(region, indicatorForecasts);
+            } else {
+                regionErrors.put(region, "Не удалось получить прогнозы для базовых показателей");
+            }
+        }
+
+        if (regionBaseForecasts.isEmpty()) {
+            String errorMsg = "Не удалось получить прогноз для выбранных регионов. Ошибки: " + regionErrors;
+            log.error(errorMsg);
+            throw new RuntimeException(errorMsg);
+        }
+
+        // 6. Вычисляем целевой (по формулам или прямой прогноз)
+        Map<String, List<ModelForecastDto>> regionTargetForecasts = new LinkedHashMap<>();
+
+        for (String region : regionBaseForecasts.keySet()) {
+            Map<String, List<ModelForecastDto>> baseForecasts = regionBaseForecasts.get(region);
+            if (baseForecasts == null || baseForecasts.isEmpty()) continue;
+
+            if (!directForecast) {
+                // Вычисляем через формулы
+                List<ModelForecastDto> firstModelList = baseForecasts.values().iterator().next();
+                List<ModelForecastDto> targetModels = new ArrayList<>();
+
+                for (int i = 0; i < firstModelList.size(); i++) {
+                    ModelForecastDto model = firstModelList.get(i);
+                    Map<String, Map<String, Double>> baseForecastValues = new HashMap<>();
+
+                    for (Map.Entry<String, List<ModelForecastDto>> entry : baseForecasts.entrySet()) {
+                        String ind = entry.getKey();
+                        List<ModelForecastDto> models = entry.getValue();
+                        if (i < models.size()) {
+                            baseForecastValues.put(ind, models.get(i).getForecast());
+                        }
+                    }
+
+                    Map<String, Double> targetForecast = computeTargetFromFormulas(targetId, nodeMap, graph, baseForecastValues);
+                    ModelForecastDto targetModel = new ModelForecastDto();
+                    targetModel.setName(model.getName());
+                    targetModel.setRank(model.getRank());
+                    targetModel.setMetrics(model.getMetrics());
+                    targetModel.setForecast(targetForecast);
+                    targetModels.add(targetModel);
+                }
+
+                regionTargetForecasts.put(region, targetModels);
+            } else {
+                // Прямой прогноз целевого
+                List<ModelForecastDto> targetModels = baseForecasts.get(params.getTargetIndicator());
+                if (targetModels != null && !targetModels.isEmpty()) {
+                    regionTargetForecasts.put(region, targetModels);
                 }
             }
         }
 
-        // 5. Вычисляем все показатели по графу
-        Map<String, List<ScenarioPointDto>> allForecast = computeAllIndicators(
-                graph, baseForecast, futureMonths);
-
-        // 6. Целевой ряд
-        List<ScenarioPointDto> targetSeries = allForecast.getOrDefault(params.getTargetIndicator(), Collections.emptyList());
-
-        // 7. По регионам
-        List<ScenarioRegionValueDto> byRegion = calculateByRegion(params.getTargetIndicator(), lastYear, lastMonth, horizon);
-        for (ScenarioRegionValueDto r : byRegion) {
-            r.setValue(r.getValue() * rateBias);
+        if (regionTargetForecasts.isEmpty()) {
+            String errorMsg = "Не удалось вычислить целевой показатель для регионов. Ошибки: " + regionErrors;
+            log.error(errorMsg);
+            throw new RuntimeException(errorMsg);
         }
 
-        // 8. СКО (RMSE лучшей модели, посчитан в цикле прогноза выше)
-        Double growthRateStd = targetRmse != null ? targetRmse : 0.0;
-
-        // 9. Драйверы
-        Map<String, String> unitByIndicator = buildUnitMap(allFacts);
-        List<ScenarioDriverDto> drivers = buildDrivers(graph, allForecast, params.getTargetIndicator(), unitByIndicator);
-
-        // 10. Собираем DTO
+        // 7. Собираем DTO
         ScenarioDto dto = new ScenarioDto();
         dto.setId(UUID.randomUUID().toString());
-        dto.setKind("custom");
         dto.setTitle(params.getName());
-        dto.setDescription("Прогноз по методу " + params.getMethod());
+        dto.setDescription("Прогноз до " + params.getHorizonMonths() + " мес.");
         dto.setParams(params);
         dto.setStatus("ready");
-        dto.setSeries(targetSeries);
-        dto.setSeriesByIndicator(allForecast);
-        dto.setByRegion(byRegion);
-        dto.setGrowthRateStd(growthRateStd);
-        dto.setDrivers(drivers);
+        dto.setTargetIndicator(params.getTargetIndicator());
+        dto.setRegions(new ArrayList<>(regionTargetForecasts.keySet()));
+        dto.setRegionForecasts(regionTargetForecasts);
 
-        // 11. Сохранить
+        // 8. Вычисляем СКО, byRegion и исторические данные для графиков
+        Map<String, Double> stdDevMap = new LinkedHashMap<>();
+        Map<String, ScenarioStdDevDto> stdDevDetails = new LinkedHashMap<>();
+        List<ScenarioRegionValueDto> byRegionList = new ArrayList<>();
+
+        // Собираем исторические данные по регионам для целевого показателя
+        Map<String, List<ScenarioPointDto>> historyByRegion = new LinkedHashMap<>();
+        for (String region : regions) {
+            List<FactEntity> regionFacts = factRepository.findBySubject(region);
+            List<ScenarioPointDto> history = regionFacts.stream()
+                    .filter(f -> f.getIndicator().equals(params.getTargetIndicator()))
+                    .sorted(Comparator.comparing(FactEntity::getPeriod))
+                    .map(f -> new ScenarioPointDto(f.getPeriod(), f.getValue()))
+                    .collect(Collectors.toList());
+            historyByRegion.put(region, history);
+        }
+
+        for (String region : regionTargetForecasts.keySet()) {
+            // СКО по алгоритму из CKO.py
+            double std = calculateStdDev(region, params.getTargetIndicator());
+            stdDevMap.put(region, std);
+
+            // Доверительный интервал для прогноза (используем первую модель)
+            List<ModelForecastDto> models = regionTargetForecasts.get(region);
+            if (models != null && !models.isEmpty()) {
+                ModelForecastDto firstModel = models.get(0);
+                Map<String, Double> forecast = firstModel.getForecast();
+                if (forecast != null && !forecast.isEmpty()) {
+                    String lastPeriod = forecast.keySet().stream().max(String::compareTo).orElse(null);
+                    if (lastPeriod != null) {
+                        Double lastValue = forecast.get(lastPeriod);
+                        byRegionList.add(new ScenarioRegionValueDto(region, lastValue));
+                    }
+
+                    // Доверительный интервал для прогноза: используем СКО и нормальное распределение (z=1.96 для 95%)
+                    double z = 1.96;
+                    Map<String, Double> lowerBounds = new LinkedHashMap<>();
+                    Map<String, Double> upperBounds = new LinkedHashMap<>();
+                    for (Map.Entry<String, Double> entry : forecast.entrySet()) {
+                        double val = entry.getValue();
+                        double interval = z * std;
+                        lowerBounds.put(entry.getKey(), val - interval);
+                        upperBounds.put(entry.getKey(), val + interval);
+                    }
+                    stdDevDetails.put(region, new ScenarioStdDevDto(std, lowerBounds, upperBounds));
+                }
+            }
+        }
+        dto.setStdDevByRegion(stdDevMap);
+        dto.setStdDevDetails(stdDevDetails);
+        dto.setByRegion(byRegionList);
+        dto.setHistoryByRegion(historyByRegion);
+
+        double avgStd = computeAverageStd(regionTargetForecasts);
+        dto.setGrowthRateStd(avgStd);
+        dto.setDrivers(new ArrayList<>());
+
+        // Сохраняем
         ScenarioEntity entity = toEntity(dto);
         entity.setUserId(userId);
         scenarioRepository.save(entity);
 
+        log.info("Сценарий {} успешно создан для {} регионов", dto.getId(), regionTargetForecasts.size());
         return dto;
     }
 
-    // ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
+    public Map<String, Double> calculateDrivers(String scenarioId, String region) {
+        // 1. Получаем сценарий
+        ScenarioDto scenario = getScenarioById(scenarioId);
+        if (scenario == null) return Collections.emptyMap();
 
-    private Set<String> findNeededIndicators(BusinessGraphDto graph, String targetIndicator) {
-        Set<String> result = new HashSet<>();
-        Map<String, GraphNodeDto> nodeMap = graph.getNodes().stream()
-                .collect(Collectors.toMap(GraphNodeDto::getId, n -> n));
-        Map<String, List<GraphEdgeDto>> incoming = new HashMap<>();
-        for (GraphEdgeDto e : graph.getEdges()) {
-            incoming.computeIfAbsent(e.getTarget(), k -> new ArrayList<>()).add(e);
+        // 2. Получаем прогнозы для региона
+        Map<String, List<ModelForecastDto>> regionForecasts = scenario.getRegionForecasts();
+        if (regionForecasts == null || !regionForecasts.containsKey(region)) {
+            return Collections.emptyMap();
         }
 
+        // 3. Берём лучшую модель (ранг 1)
+        List<ModelForecastDto> models = regionForecasts.get(region);
+        ModelForecastDto bestModel = models.stream()
+                .filter(m -> m.getRank() != null && m.getRank() == 1)
+                .findFirst()
+                .orElse(models.get(0));
+
+        Map<String, Double> forecast = bestModel.getForecast();
+        if (forecast == null || forecast.isEmpty()) return Collections.emptyMap();
+
+        // 4. Определяем базовые показатели для целевого через граф
+        BusinessGraphDto graph = graphService.getGraph();
+        Map<String, GraphNodeDto> nodeMap = graph.getNodes().stream()
+                .collect(Collectors.toMap(GraphNodeDto::getId, n -> n));
+
         String targetId = nodeMap.entrySet().stream()
-                .filter(e -> e.getValue().getIndicator().equals(targetIndicator))
+                .filter(e -> e.getValue().getIndicator().equals(scenario.getTargetIndicator()))
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(null);
-        if (targetId == null) return result;
 
-        collectNeeded(targetId, nodeMap, incoming, result);
+        if (targetId == null) return Collections.emptyMap();
+
+        Set<String> baseIndicators = new HashSet<>();
+        collectBaseIndicators(targetId, nodeMap, graph, baseIndicators);
+
+        // 5. Берём фактические данные для базовых показателей из БД
+        Map<String, Double> baseStart = new HashMap<>();
+        Map<String, Double> baseEnd = new HashMap<>();
+
+        for (String indicator : baseIndicators) {
+            List<FactEntity> facts = factRepository.findBySubject(region);
+            List<FactEntity> filtered = facts.stream()
+                    .filter(f -> f.getIndicator().equals(indicator))
+                    .sorted(Comparator.comparing(FactEntity::getPeriod))
+                    .collect(Collectors.toList());
+
+            if (filtered.size() >= 2) {
+                baseStart.put(indicator, filtered.get(0).getValue());
+                baseEnd.put(indicator, filtered.get(filtered.size() - 1).getValue());
+            }
+        }
+
+        // 6. Вычисляем изменение целевого показателя
+        Double targetStart = baseStart.values().stream().mapToDouble(Double::doubleValue).sum();
+        Double targetEnd = baseEnd.values().stream().mapToDouble(Double::doubleValue).sum();
+        double targetDelta = targetEnd - targetStart;
+
+        if (Math.abs(targetDelta) < 1e-9) return Collections.emptyMap();
+
+        // 7. Для каждого базового показателя вычисляем вклад
+        Map<String, Double> driverContributions = new LinkedHashMap<>();
+
+        for (String indicator : baseIndicators) {
+            Double startVal = baseStart.getOrDefault(indicator, 0.0);
+            Double endVal = baseEnd.getOrDefault(indicator, 0.0);
+            double delta = endVal - startVal;
+
+            // Вычисляем вклад с учётом производной (упрощённо: пропорционально изменению)
+            double contribution = (delta / Math.abs(targetDelta)) * 100;
+            driverContributions.put(indicator, contribution);
+        }
+
+        // Нормализуем, чтобы сумма была 100%
+        double sum = driverContributions.values().stream().mapToDouble(Double::doubleValue).sum();
+        if (Math.abs(sum) > 1e-9) {
+            for (Map.Entry<String, Double> entry : driverContributions.entrySet()) {
+                entry.setValue(entry.getValue() / sum * 100);
+            }
+        }
+
+        return driverContributions;
+    }
+
+    // Вспомогательный метод для получения сценария по ID
+    private ScenarioDto getScenarioById(String id) {
+        return scenarioRepository.findById(id)
+                .map(this::fromEntity)
+                .orElse(null);
+    }
+
+
+    // ===== Приватные методы =====
+
+    private List<ModelForecastDto> forecastIndicator(String region, String indicator, int horizon) {
+        List<FactEntity> facts = factRepository.findBySubject(region);
+        Map<Integer, Map<Integer, Double>> history = buildHistory(facts, indicator);
+
+        if (history.isEmpty()) {
+            log.warn("Нет истории для {} в {}", indicator, region);
+            return Collections.emptyList();
+        }
+
+        int totalPoints = history.values().stream().mapToInt(Map::size).sum();
+        if (totalPoints < 5) {
+            log.warn("Недостаточно данных для {} в {} ({} точек). Минимум 5.", indicator, region, totalPoints);
+            return Collections.emptyList();
+        }
+
+        log.info("Вызов Python для {} в {}, точек: {}", indicator, region, totalPoints);
+
+        JsonNode result = pythonClientService.callPredict(region, indicator, horizon, "best", history);
+        if (result == null) {
+            log.error("Python вернул null для {} в {}", indicator, region);
+            return Collections.emptyList();
+        }
+
+        JsonNode modelsNode = result.path("models");
+        if (!modelsNode.isArray() || modelsNode.size() == 0) {
+            log.error("Нет моделей в ответе для {} в {}", indicator, region);
+            return Collections.emptyList();
+        }
+
+        List<ModelForecastDto> models = new ArrayList<>();
+        for (JsonNode modelNode : modelsNode) {
+            ModelForecastDto dto = new ModelForecastDto();
+            dto.setName(modelNode.path("name").asText());
+            dto.setRank(modelNode.path("best").asInt(0));
+
+            Map<String, Double> metrics = new HashMap<>();
+            JsonNode metricsNode = modelNode.path("metrics");
+            metrics.put("MAE", metricsNode.path("MAE").asDouble());
+            metrics.put("RMSE", metricsNode.path("RMSE").asDouble());
+            metrics.put("MAPE", metricsNode.path("MAPE").asDouble());
+            dto.setMetrics(metrics);
+
+            Map<String, Double> forecast = new LinkedHashMap<>();
+            JsonNode forecastNode = modelNode.path("forecast");
+            if (forecastNode != null && forecastNode.isObject()) {
+                forecastNode.fields().forEachRemaining(entry -> {
+                    String date = entry.getKey();
+                    if (date.length() >= 7) date = date.substring(0, 7);
+                    forecast.put(date, entry.getValue().asDouble());
+                });
+            }
+            dto.setForecast(forecast);
+            models.add(dto);
+        }
+
+        log.info("Получено {} моделей для {} в {}", models.size(), indicator, region);
+        return models;
+    }
+
+    private void collectBaseIndicators(String nodeId, Map<String, GraphNodeDto> nodeMap,
+                                       BusinessGraphDto graph, Set<String> baseIndicators) {
+        GraphNodeDto node = nodeMap.get(nodeId);
+        if (node == null) return;
+        List<GraphEdgeDto> incoming = graph.getEdges().stream()
+                .filter(e -> e.getTarget().equals(nodeId))
+                .collect(Collectors.toList());
+        if (incoming.isEmpty()) {
+            baseIndicators.add(node.getIndicator());
+        } else {
+            for (GraphEdgeDto edge : incoming) {
+                collectBaseIndicators(edge.getSource(), nodeMap, graph, baseIndicators);
+            }
+        }
+    }
+
+    private Map<String, Double> computeTargetFromFormulas(String targetId,
+                                                          Map<String, GraphNodeDto> nodeMap,
+                                                          BusinessGraphDto graph,
+                                                          Map<String, Map<String, Double>> baseForecastValues) {
+        Set<String> periods = baseForecastValues.values().stream()
+                .flatMap(m -> m.keySet().stream())
+                .collect(Collectors.toSet());
+        Map<String, Double> result = new LinkedHashMap<>();
+        for (String period : periods) {
+            double value = evaluateNode(targetId, nodeMap, graph, baseForecastValues, period, new HashSet<>());
+            result.put(period, value);
+        }
         return result;
     }
 
-    private void collectNeeded(String nodeId, Map<String, GraphNodeDto> nodeMap,
-                               Map<String, List<GraphEdgeDto>> incoming, Set<String> result) {
+    private double evaluateNode(String nodeId,
+                                Map<String, GraphNodeDto> nodeMap,
+                                BusinessGraphDto graph,
+                                Map<String, Map<String, Double>> baseForecastValues,
+                                String period,
+                                Set<String> visited) {
+        if (visited.contains(nodeId)) return 0.0;
+        visited.add(nodeId);
+
         GraphNodeDto node = nodeMap.get(nodeId);
-        if (node == null) return;
-        if (!incoming.containsKey(nodeId) || incoming.get(nodeId).isEmpty()) {
-            result.add(node.getIndicator());
-            return;
+        if (node == null) return 0.0;
+
+        List<GraphEdgeDto> incoming = graph.getEdges().stream()
+                .filter(e -> e.getTarget().equals(nodeId))
+                .collect(Collectors.toList());
+        if (incoming.isEmpty()) {
+            Map<String, Double> forecast = baseForecastValues.get(node.getIndicator());
+            return forecast != null ? forecast.getOrDefault(period, 0.0) : 0.0;
         }
-        for (GraphEdgeDto edge : incoming.get(nodeId)) {
-            collectNeeded(edge.getSource(), nodeMap, incoming, result);
+
+        double result = 0.0;
+        boolean first = true;
+        for (GraphEdgeDto edge : incoming) {
+            double val = evaluateNode(edge.getSource(), nodeMap, graph, baseForecastValues, period, new HashSet<>(visited));
+            if (first) {
+                result = val;
+                first = false;
+            } else {
+                switch (edge.getOperator()) {
+                    case "+": result += val; break;
+                    case "-": result -= val; break;
+                    case "*": result *= val; break;
+                    case "/": if (val != 0) result /= val; break;
+                    case "%": if (val != 0) result = result * val / 100.0; break;
+                }
+            }
         }
+        return result;
     }
 
-    private Map<String, List<ScenarioPointDto>> computeAllIndicators(
-            BusinessGraphDto graph,
-            Map<String, List<ScenarioPointDto>> baseForecast,
-            String[] futureMonths) {
-
-        Map<String, GraphNodeDto> nodeMap = graph.getNodes().stream()
-                .collect(Collectors.toMap(GraphNodeDto::getId, n -> n));
-
-        Map<String, List<GraphEdgeDto>> incoming = new HashMap<>();
-        for (GraphEdgeDto e : graph.getEdges()) {
-            incoming.computeIfAbsent(e.getTarget(), k -> new ArrayList<>()).add(e);
-        }
-
-        Set<String> baseIds = nodeMap.entrySet().stream()
-                .filter(e -> "indicator".equals(e.getValue().getKind()))
-                .filter(e -> !incoming.containsKey(e.getKey()))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toSet());
-
-        class Evaluator {
-            double evaluate(String nodeId, String month, Set<String> visited) {
-                if (visited.contains(nodeId)) return 0.0;
-                visited.add(nodeId);
-                GraphNodeDto node = nodeMap.get(nodeId);
-                if (node == null) return 0.0;
-                if (baseIds.contains(nodeId) || !incoming.containsKey(nodeId) || incoming.get(nodeId).isEmpty()) {
-                    List<ScenarioPointDto> pts = baseForecast.get(node.getIndicator());
-                    if (pts != null) {
-                        return pts.stream().filter(p -> p.getPeriod().equals(month))
-                                .map(ScenarioPointDto::getValue).findFirst().orElse(0.0);
-                    }
-                    return 0.0;
+    private double computeAverageStd(Map<String, List<ModelForecastDto>> regionForecasts) {
+        double sum = 0;
+        int count = 0;
+        for (List<ModelForecastDto> models : regionForecasts.values()) {
+            for (ModelForecastDto model : models) {
+                Double rmse = model.getMetrics().get("RMSE");
+                if (rmse != null) {
+                    sum += rmse;
+                    count++;
                 }
-                List<GraphEdgeDto> edges = incoming.get(nodeId);
-                if (edges == null || edges.isEmpty()) return 0.0;
-                double result = 0.0;
-                boolean first = true;
-                for (GraphEdgeDto edge : edges) {
-                    double val = evaluate(edge.getSource(), month, new HashSet<>(visited));
-                    if (first) {
-                        result = val;
-                        first = false;
-                    } else {
-                        switch (edge.getOperator()) {
-                            case "+": result += val; break;
-                            case "-": result -= val; break;
-                            case "*": result *= val; break;
-                            case "/": if (val != 0) result /= val; break;
-                            case "%": if (val != 0) result %= val; break;
-                        }
-                    }
-                }
-                return result;
             }
         }
-
-        Evaluator evaluator = new Evaluator();
-        Map<String, List<ScenarioPointDto>> allForecast = new LinkedHashMap<>();
-        for (GraphNodeDto node : graph.getNodes()) {
-            if (!"indicator".equals(node.getKind())) continue;
-            List<ScenarioPointDto> points = new ArrayList<>();
-            for (String month : futureMonths) {
-                double val = evaluator.evaluate(node.getId(), month, new HashSet<>());
-                points.add(new ScenarioPointDto(month, val));
-            }
-            allForecast.put(node.getIndicator(), points);
-        }
-        return allForecast;
+        return count > 0 ? sum / count : 0.0;
     }
 
     private Map<Integer, Map<Integer, Double>> buildHistory(List<FactEntity> facts, String indicator) {
@@ -304,115 +503,81 @@ public class ScenarioService {
             String[] parts = f.getPeriod().split("-");
             int year = Integer.parseInt(parts[0]);
             int month = Integer.parseInt(parts[1]);
-            history.computeIfAbsent(year, k -> new LinkedHashMap<>())
-                    .merge(month, f.getValue(), Double::sum);
+            history.computeIfAbsent(year, k -> new LinkedHashMap<>()).put(month, f.getValue());
         }
         return history;
     }
 
-    private String[] getFutureMonths(int year, int month, int count) {
-        String[] months = new String[count];
-        Calendar cal = Calendar.getInstance();
-        cal.set(year, month - 1, 1);
-        for (int i = 0; i < count; i++) {
-            cal.add(Calendar.MONTH, 1);
-            months[i] = String.format("%d-%02d", cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1);
-        }
-        return months;
-    }
+    /**
+     * Расчёт СКО исторических данных по алгоритму из CKO.py (десезонализация и удаление тренда)
+     */
+    private double calculateStdDev(String region, String indicator) {
+        List<FactEntity> facts = factRepository.findBySubject(region);
+        if (facts.isEmpty()) return 0.0;
 
-    private List<ScenarioRegionValueDto> calculateByRegion(String indicator, int year, int month, int horizon) {
-        List<FactEntity> facts = factRepository.findAll();
-        String lastPeriod = String.format("%d-%02d", year, month);
-        Map<String, Double> regionLastValue = new HashMap<>();
-        for (FactEntity f : facts) {
-            if (f.getIndicator().equals(indicator) && f.getPeriod().equals(lastPeriod)) {
-                regionLastValue.put(f.getSubject(), f.getValue());
-            }
-        }
-        double total = regionLastValue.values().stream().mapToDouble(Double::doubleValue).sum();
-        if (total == 0) return Collections.emptyList();
+        List<FactEntity> filtered = facts.stream()
+                .filter(f -> f.getIndicator().equals(indicator))
+                .sorted(Comparator.comparing(FactEntity::getPeriod))
+                .collect(Collectors.toList());
 
-        List<ScenarioRegionValueDto> list = new ArrayList<>();
-        for (Map.Entry<String, Double> entry : regionLastValue.entrySet()) {
-            ScenarioRegionValueDto dto = new ScenarioRegionValueDto();
-            dto.setSubject(entry.getKey());
-            dto.setValue(entry.getValue() * 1.05);
-            list.add(dto);
-        }
-        return list;
-    }
+        if (filtered.size() < 12) return 0.0;
 
-    /** Нормализует ответ Python: узел {models, best_model} → лучшая модель; объект с forecast — как есть. */
-    private JsonNode extractModel(JsonNode result) {
-        if (result == null) return null;
-        if (result.has("forecast")) return result;
-        if (result.has("models")) {
-            JsonNode models = result.path("models");
-            for (JsonNode m : models) {
-                if (m.path("best").asBoolean(false)) return m;
-            }
-            if (models.size() > 0) return models.get(0);
-        }
-        return null;
-    }
-
-    /** Единицы измерения по показателю из фактов. */
-    private Map<String, String> buildUnitMap(List<FactEntity> facts) {
-        Map<String, String> map = new HashMap<>();
-        for (FactEntity f : facts) {
-            if (f.getUnit() != null) map.putIfAbsent(f.getIndicator(), f.getUnit());
-        }
-        return map;
-    }
-
-    /** Прямые драйверы целевого показателя — источники входящих рёбер графа. */
-    private List<String> directDrivers(BusinessGraphDto graph, String targetIndicator) {
-        Map<String, GraphNodeDto> nodeMap = graph.getNodes().stream()
-                .collect(Collectors.toMap(GraphNodeDto::getId, n -> n));
-        String targetId = nodeMap.entrySet().stream()
-                .filter(e -> e.getValue().getIndicator().equals(targetIndicator))
-                .map(Map.Entry::getKey).findFirst().orElse(null);
-        if (targetId == null) return Collections.emptyList();
-        List<String> result = new ArrayList<>();
-        for (GraphEdgeDto e : graph.getEdges()) {
-            if (targetId.equals(e.getTarget())) {
-                GraphNodeDto src = nodeMap.get(e.getSource());
-                if (src != null) result.add(src.getIndicator());
-            }
-        }
-        return result;
-    }
-
-    private List<ScenarioDriverDto> buildDrivers(BusinessGraphDto graph,
-                                                 Map<String, List<ScenarioPointDto>> forecast,
-                                                 String target,
-                                                 Map<String, String> unitByIndicator) {
-        // Драйверы целевого показателя — его прямые входы по графу.
-        // У базового показателя (без входящих рёбер) драйверов нет — секция скрывается.
-        List<String> driverIndicators = directDrivers(graph, target);
-
-        Map<String, Double> avgByIndicator = new LinkedHashMap<>();
-        for (String ind : driverIndicators) {
-            List<ScenarioPointDto> pts = forecast.get(ind);
-            if (pts == null || pts.isEmpty()) continue;
-            double avg = pts.stream().mapToDouble(ScenarioPointDto::getValue).average().orElse(0.0);
-            avgByIndicator.put(ind, avg);
+        // 1. Средние по месяцам
+        Map<Integer, Double> monthSums = new HashMap<>();
+        Map<Integer, Integer> monthCounts = new HashMap<>();
+        for (FactEntity f : filtered) {
+            String[] parts = f.getPeriod().split("-");
+            int month = Integer.parseInt(parts[1]);
+            double val = f.getValue();
+            monthSums.put(month, monthSums.getOrDefault(month, 0.0) + val);
+            monthCounts.put(month, monthCounts.getOrDefault(month, 0) + 1);
         }
 
-        double totalAbs = avgByIndicator.values().stream().mapToDouble(Math::abs).sum();
-        List<ScenarioDriverDto> drivers = new ArrayList<>();
-        for (Map.Entry<String, Double> e : avgByIndicator.entrySet()) {
-            ScenarioDriverDto dto = new ScenarioDriverDto();
-            dto.setIndicator(e.getKey());
-            dto.setValue(e.getValue());
-            dto.setUnit(unitByIndicator.getOrDefault(e.getKey(), "руб"));
-            double pct = totalAbs > 0 ? Math.abs(e.getValue()) / totalAbs * 100.0 : 0.0;
-            dto.setContributionPct(Math.round(pct * 10.0) / 10.0);
-            drivers.add(dto);
+        Map<Integer, Double> monthAvg = new HashMap<>();
+        for (int m : monthSums.keySet()) {
+            monthAvg.put(m, monthSums.get(m) / monthCounts.get(m));
         }
-        drivers.sort((a, b) -> Double.compare(Math.abs(b.getValue()), Math.abs(a.getValue())));
-        return drivers.stream().limit(5).collect(Collectors.toList());
+
+        double overallAvg = monthAvg.values().stream().mapToDouble(Double::doubleValue).average().orElse(1.0);
+        Map<Integer, Double> seasonality = new HashMap<>();
+        for (int m : monthAvg.keySet()) {
+            seasonality.put(m, overallAvg > 0 ? monthAvg.get(m) / overallAvg : 1.0);
+        }
+
+        // 2. Дезонализируем и собираем остатки
+        Map<Integer, List<Double>> yearlyDeseasonalized = new HashMap<>();
+        for (FactEntity f : filtered) {
+            String[] parts = f.getPeriod().split("-");
+            int year = Integer.parseInt(parts[0]);
+            int month = Integer.parseInt(parts[1]);
+            double val = f.getValue();
+            double coef = seasonality.getOrDefault(month, 1.0);
+            double deseasonalized = coef != 0 ? val / coef : val;
+            yearlyDeseasonalized.computeIfAbsent(year, k -> new ArrayList<>()).add(deseasonalized);
+        }
+
+        Map<Integer, Double> yearAvg = new HashMap<>();
+        for (int year : yearlyDeseasonalized.keySet()) {
+            List<Double> vals = yearlyDeseasonalized.get(year);
+            double avg = vals.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+            yearAvg.put(year, avg);
+        }
+
+        List<Double> residuals = new ArrayList<>();
+        for (FactEntity f : filtered) {
+            String[] parts = f.getPeriod().split("-");
+            int year = Integer.parseInt(parts[0]);
+            int month = Integer.parseInt(parts[1]);
+            double val = f.getValue();
+            double coef = seasonality.getOrDefault(month, 1.0);
+            double deseasonalized = coef != 0 ? val / coef : val;
+            double yearMean = yearAvg.getOrDefault(year, 0.0);
+            residuals.add(deseasonalized - yearMean);
+        }
+
+        double mean = residuals.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+        double variance = residuals.stream().mapToDouble(d -> Math.pow(d - mean, 2)).average().orElse(0);
+        return Math.sqrt(variance);
     }
 
     private ScenarioEntity toEntity(ScenarioDto dto) {

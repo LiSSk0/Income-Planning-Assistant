@@ -12,9 +12,17 @@ public class ScenarioDto {
     private String description;
     private ScenarioParamsDto params;
     private String status;
+    private String targetIndicator;
+    private List<String> regions;
+    private Map<String, List<ModelForecastDto>> regionForecasts;
+    private Double growthRateStd;
+    private List<ScenarioDriverDto> drivers;
     private List<ScenarioPointDto> series;
     private Map<String, List<ScenarioPointDto>> seriesByIndicator;
     private List<ScenarioRegionValueDto> byRegion;
-    private Double growthRateStd;
-    private List<ScenarioDriverDto> drivers;
+
+    // Новые поля
+    private Map<String, Double> stdDevByRegion;
+    private Map<String, ScenarioStdDevDto> stdDevDetails;
+    private Map<String, List<ScenarioPointDto>> historyByRegion;
 }

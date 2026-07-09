@@ -101,6 +101,7 @@ export const api = {
             })
         ),
 
+
     deleteScenario: (id: string) =>
         request<{ status: string }>(`/api/scenarios/${id}`, { method: 'DELETE' }),
 
@@ -146,6 +147,9 @@ export const api = {
     // ========== Драйверы ==========
     getDrivers: (subject: string, indicator: string) =>
         request<DriverRow[]>(`/api/analytics/drivers?subject=${encodeURIComponent(subject)}&indicator=${encodeURIComponent(indicator)}`),
+
+    getScenarioDrivers: (scenarioId: string, region: string) =>
+        request<Record<string, number>>(`/api/scenarios/${scenarioId}/drivers?region=${encodeURIComponent(region)}`),
 
     // ========== Сезонность ==========
     getSeasonality: (subject: string, indicator: string) =>

@@ -13,10 +13,10 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDate;
 import java.util.*;
 
 @RestController
@@ -36,7 +36,6 @@ public class AnalyticsController {
     private final PythonClientService pythonClientService;
     private final GraphService graphService;
     private final AnomalyService anomalyService;
-    // ✅ Добавляем NewsService
     private final NewsService newsService;
 
     // ========== Факты и справочники ==========
@@ -78,11 +77,8 @@ public class AnalyticsController {
     @GetMapping("/entities")
     public ResponseEntity<List<DetectedEntityDto>> getEntities() {
         List<DetectedEntityDto> result = new ArrayList<>();
-
         List<FactEntity> facts = factRepository.findAll();
-        if (facts.isEmpty()) {
-            return ResponseEntity.ok(result);
-        }
+        if (facts.isEmpty()) return ResponseEntity.ok(result);
 
         List<String> periods = factRepository.findAllPeriods().stream().limit(3).toList();
         List<String> districts = factRepository.findDistinctSubjects().stream().limit(3).toList();
@@ -94,8 +90,7 @@ public class AnalyticsController {
         result.add(new DetectedEntityDto("indicator", "indicator", 0.94, indicators));
         result.add(new DetectedEntityDto("unit", "unit", 0.90, List.of("руб", "чел", "%")));
         result.add(new DetectedEntityDto("value", "value", 0.98,
-                facts.stream().limit(3).map(f -> String.valueOf(f.getValue())).toList()
-        ));
+                facts.stream().limit(3).map(f -> String.valueOf(f.getValue())).toList()));
 
         return ResponseEntity.ok(result);
     }
@@ -125,13 +120,15 @@ public class AnalyticsController {
     }
 
     @PostMapping("/scenarios")
-    public ResponseEntity<List<ScenarioDto>> createScenario(@RequestBody ScenarioParamsDto params) {
-        return ResponseEntity.ok(scenarioService.generateScenarios(params));
+    public ResponseEntity<ScenarioDto> createScenario(@RequestBody ScenarioParamsDto params,
+                                                      @RequestParam(required = false) String userId) {
+        return ResponseEntity.ok(scenarioService.generateScenario(params, userId));
     }
 
     @PostMapping("/scenarios/compute")
-    public ResponseEntity<List<ScenarioDto>> computeScenario(@RequestBody ScenarioParamsDto params) {
-        return createScenario(params);
+    public ResponseEntity<ScenarioDto> computeScenario(@RequestBody ScenarioParamsDto params,
+                                                       @RequestParam(required = false) String userId) {
+        return createScenario(params, userId);
     }
 
     @DeleteMapping("/scenarios/{id}")
@@ -182,7 +179,7 @@ public class AnalyticsController {
         ));
     }
 
-    // ========== Новости (с кешированием через NewsService) ==========
+    // ========== Новости ==========
     @GetMapping("/news")
     public ResponseEntity<List<NewsDto>> getNewsGet(
             @RequestParam(required = false) String subject,
@@ -224,6 +221,19 @@ public class AnalyticsController {
             @RequestParam String subject,
             @RequestParam String indicator) {
         return ResponseEntity.ok(driversService.getDrivers(subject, indicator));
+    }
+
+    @GetMapping("/scenarios/{id}/drivers")
+    public ResponseEntity<Map<String, Double>> getScenarioDrivers(
+            @PathVariable String id,
+            @RequestParam String region) {
+        try {
+            Map<String, Double> drivers = scenarioService.calculateDrivers(id, region);
+            return ResponseEntity.ok(drivers);
+        } catch (Exception e) {
+            log.error("Ошибка расчёта драйверов для сценария {}: {}", id, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     // ========== Сезонность ==========
@@ -269,12 +279,12 @@ public class AnalyticsController {
         return ResponseEntity.ok().headers(headers).body(content);
     }
 
-    // ========== Очистка (тест) ==========
+    // ========== Очистка ==========
     @DeleteMapping("/clean")
     public ResponseEntity<Map<String, String>> cleanDatabase() {
         factRepository.deleteAll();
-        anomalyService.clearAllCorrections();
         graphService.deleteGraph();
+        anomalyService.clearAllCorrections();
         return ResponseEntity.ok(Map.of("status", "ok", "message", "База данных очищена"));
     }
 

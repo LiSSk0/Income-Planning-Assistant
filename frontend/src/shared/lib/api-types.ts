@@ -1,216 +1,201 @@
+// src/shared/lib/api-types.ts
 /* ============================================================
-   Контракты фронт↔бэк. Держим ВСЕ типы обмена здесь, чтобы
-   замена моков на реальный REST/WebSocket (фаза 5) была локальной.
+   Контракты фронт↔бэк. Держим ВСЕ типы обмена здесь.
    ============================================================ */
 
-/** Категории распознавания сущностей при загрузке. */
 export type EntityCategory = 'date' | 'indicator' | 'territory' | 'value' | 'unit'
 
-/** Одна строка длинного (long) формата фактов.
- *  Единая широкая таблица — без вложенных структур и join на клиенте. */
+/** Одна строка длинного (long) формата фактов. */
 export interface FactRow {
-  period: string // "YYYY-MM" — Отчётный период
-  district: string // Федеральный округ РФ
-  subject: string // Субъект РФ
-  indicator: string // Показатель
-  unit: string // Мера измерения
-  value: number // Значение
+    period: string
+    district: string
+    subject: string
+    indicator: string
+    unit: string
+    value: number
 }
 
-/** Математические операции на рёбрах графа бизнес-модели. */
 export type GraphOperator = '+' | '-' | '*' | '/' | '%'
 
 export interface GraphNodeModel {
-  id: string
-  /** Название показателя (совпадает с FactRow.indicator). */
-  indicator: string
-  unit: string
-  /** Текущее (последнее известное) значение для подписи в узле. */
-  currentValue: number
-  /** Узел-результат собирается из входящих рёбер по их оператору. */
-  isDerived: boolean
-  position?: { x: number; y: number }
+    id: string
+    indicator: string
+    unit: string
+    currentValue: number
+    isDerived: boolean
+    position?: { x: number; y: number }
+    kind?: 'indicator' | 'operation'
 }
 
 export interface GraphEdgeModel {
-  id: string
-  source: string
-  target: string
-  operator: GraphOperator
+    id: string
+    source: string
+    target: string
+    operator: GraphOperator
 }
 
 export interface BusinessGraph {
-  nodes: GraphNodeModel[]
-  edges: GraphEdgeModel[]
+    nodes: GraphNodeModel[]
+    edges: GraphEdgeModel[]
 }
 
-/* ---------- Загрузка / прогресс через WebSocket ---------- */
+/* ---------- Загрузка / прогресс ---------- */
 
 export type UploadPhase =
-  | 'queued'
-  | 'parsing'
-  | 'validating'
-  | 'detecting-entities'
-  | 'persisting'
-  | 'done'
-  | 'error'
+    | 'queued'
+    | 'parsing'
+    | 'validating'
+    | 'detecting-entities'
+    | 'persisting'
+    | 'done'
+    | 'error'
 
 export interface UploadProgressEvent {
-  uploadId: string
-  phase: UploadPhase
-  /** 0..100 — процент обработки, к которому привязан прогресс-бар. */
-  percent: number
-  message: string
-  rowsProcessed?: number
-  rowsTotal?: number
+    uploadId: string
+    phase: UploadPhase
+    percent: number
+    message: string
+    rowsProcessed?: number
+    rowsTotal?: number
 }
 
 export interface DetectedEntity {
-  column: string
-  category: EntityCategory
-  confidence: number // 0..1
-  sample: string[]
+    column: string
+    category: EntityCategory
+    confidence: number
+    sample: string[]
 }
 
-/* ---------- Сценарии планирования ---------- */
+/* ---------- Сценарии ---------- */
 
-export type ScenarioKind =
-  | 'base'
-  | 'optimistic'
-  | 'conservative'
-  | 'custom'
-  | 'ai'
-
+export type ScenarioKind = 'base' | 'optimistic' | 'conservative' | 'custom' | 'ai'
 export type CalcMethod = 'growth-rate' | 'avg-3m' | 'avg-6m'
+export type ScenarioStatus = 'queued' | 'computing' | 'ready' | 'failed'
 
 export interface ScenarioParams {
-    name?: string
+    name: string
     targetIndicator: string
+    regions: string[]          // пустой список = все регионы
     horizonMonths: number
+    useFormulas: boolean
+    // legacy (сохранены для обратной совместимости)
     periodFrom?: number
-    seasonality: boolean
-    method: CalcMethod
+    seasonality?: boolean
+    method?: CalcMethod
     driverMultipliers?: Record<string, number>
-    forecastMode?: string // "best" | "all" | "sarimax" | "prophet" | ...
+    forecastMode?: string
+}
+
+export interface ModelForecast {
+    name: string
+    rank: number
+    metrics: {
+        MAE: number
+        RMSE: number
+        MAPE: number
+    }
+    forecast: Record<string, number>  // "YYYY-MM" -> значение
+}
+
+export interface Scenario {
+    id: string
+    kind: ScenarioKind
+    title: string
+    description: string
+    params: ScenarioParams
+    status: ScenarioStatus
+    targetIndicator: string
+    regions: string[]
+    regionForecasts: Record<string, ModelForecast[]>  // ключ = регион, значение = список моделей
+    growthRateStd: number
+    drivers: ScenarioDriver[]
+    // legacy (для обратной совместимости)
+    series?: ScenarioPoint[]
+    seriesByIndicator?: Record<string, ScenarioPoint[]>
+    byRegion?: ScenarioRegionValue[]
 }
 
 export interface ScenarioPoint {
-  period: string
-  value: number
+    period: string
+    value: number
 }
 
 export interface ScenarioRegionValue {
-  subject: string
-  value: number
-}
-
-/** Статусы пересчёта — лимит 5 параллельных тяжёлых задач на бэке. */
-export type ScenarioStatus = 'queued' | 'computing' | 'ready' | 'failed'
-
-export interface Scenario {
-  id: string
-  kind: ScenarioKind
-  title: string
-  description: string
-  params: ScenarioParams
-  status: ScenarioStatus
-  series: ScenarioPoint[] // динамика целевого показателя по периодам
-  /** Прогноз по КАЖДОМУ доступному показателю (агрегировано по субъектам).
-   *  Ключ — название показателя. Используется для блока «Прогноз по
-   *  показателям» с чекбоксами выбора. */
-  seriesByIndicator?: Record<string, ScenarioPoint[]>
-  byRegion: ScenarioRegionValue[] // значение для choropleth-карты
-  /** Метрика качества: СКО темпов роста год к году по субъектам РФ. */
-  growthRateStd: number
-  /** Драйверы итогового числа с процентным вкладом (раздел 3.5). */
-  drivers: ScenarioDriver[]
+    subject: string
+    value: number
 }
 
 export interface ScenarioDriver {
-  indicator: string
-  contributionPct: number // вклад в итоговое число, %
-  value: number
-  unit: string
+    indicator: string
+    contributionPct: number
+    value: number
+    unit: string
+}
+
+/* ---------- Новости и аномалии ---------- */
+
+export interface NewsCard {
+    id: string
+    title: string
+    source: string
+    date: string
+    url: string
+    summary: string
+    relatedPeriod?: string
+    impact: 'positive' | 'negative' | 'neutral'
+    presumed: boolean
+}
+
+export interface AnomalyCard {
+    id: string
+    indicator: string
+    period: string
+    subject: string
+    deviationPct: number
+    direction: 'up' | 'down'
+    text: string
 }
 
 /* ---------- AI-блок ---------- */
 
-export interface NewsCard {
-  id: string
-  title: string
-  source: string
-  date: string // "YYYY-MM"
-  url: string
-  summary: string
-  /** Период на графике, к которому новость предположительно относится. */
-  relatedPeriod?: string
-  /** Знак предполагаемого влияния на показатель. */
-  impact: 'positive' | 'negative' | 'neutral'
-  /** Корреляция не точная — помечаем «предположительно». */
-  presumed: boolean
-}
-
-export interface AnomalyCard {
-  id: string
-  indicator: string
-  period: string
-  subject: string
-  /** Величина отклонения, % к предыдущему периоду / тренду. */
-  deviationPct: number
-  direction: 'up' | 'down'
-  text: string
-}
-
-/* ============================================================
-   Контракты «Недели 1» — точные форматы, согласованные с
-   backend-командой (tasks/task_week1.txt). Это отдельный
-   набор полей (camelCase, дата "YYYY-MM-DD"), независимый от
-   long-формата FactRow выше.
-   ============================================================ */
-
-/** Строка драйверов по региону и периоду (GET /api/analytics/drivers). */
-export interface DriverRow {
-  reportPeriod: string // "YYYY-MM-DD" (первое число месяца)
-  federalDistrict: string // напр. "Северо-Западный ФО"
-  subjectRf: string // напр. "Мурманская обл."
-  avgArpu: number // средний ARPU
-  marketPenetrationPct: number // проникновение на рынок, %
-  avgTransactionCheck: number // средний чек транзакции, руб
-  bankIncomeLag1: number | null // доход банка со сдвигом на 1 период (может быть null)
-}
-
-/** Ответ AI-блока (GET /api/ai/summary). */
 export interface AiSummaryResponse {
-  marketNews: string // контекстная новость по рынку (грузится при выборе региона)
-  aiPlanSummary: string // саммари плана (по кнопке «Сгенерировать AI-резюме»)
+    marketNews: string
+    aiPlanSummary: string
 }
 
-/** Ответ заглушки загрузки (POST /api/analytics/upload). */
-export interface UploadResultResponse {
-  status: 'ok'
-  message: string // напр. «Данные успешно загружены и пересчитаны»
-}
+/* ---------- Граф формулы ---------- */
 
-/* ---------- Сохранение формул графа (POST /api/graph/formulas) ---------- */
-
-/** Одна формула производного показателя. */
 export interface GraphFormula {
-  targetId: string // id целевого узла
-  target: string // имя целевого показателя
-  expression: string // «Доход = Клиенты × Чек» (человекочитаемо)
-  operands: { sourceId: string; source: string; operator: GraphOperator }[]
+    targetId: string
+    target: string
+    expression: string
+    operands: { sourceId: string; source: string; operator: GraphOperator }[]
 }
 
-/** Тело запроса на сохранение всех формул графа. */
 export interface SaveFormulasRequest {
-  formulas: GraphFormula[]
-  nodes: { id: string; kind: 'indicator' | 'operation'; label: string }[]
-  edges: { source: string; target: string; operator: GraphOperator }[]
+    formulas: GraphFormula[]
+    nodes: { id: string; kind: 'indicator' | 'operation'; label: string }[]
+    edges: { source: string; target: string; operator: GraphOperator }[]
 }
 
-/** Ответ на сохранение формул. */
 export interface SaveFormulasResponse {
-  status: 'ok'
-  saved: number // сколько формул сохранено
+    status: 'ok'
+    saved: number
 }
 
+/* ---------- Драйверы (legacy) ---------- */
+
+export interface DriverRow {
+    reportPeriod: string
+    federalDistrict: string
+    subjectRf: string
+    avgArpu: number
+    marketPenetrationPct: number
+    avgTransactionCheck: number
+    bankIncomeLag1: number | null
+}
+
+export interface UploadResultResponse {
+    status: 'ok'
+    message: string
+}

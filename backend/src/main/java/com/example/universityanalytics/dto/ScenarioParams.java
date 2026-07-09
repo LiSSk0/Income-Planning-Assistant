@@ -1,6 +1,6 @@
 package com.example.universityanalytics.dto;
 
-import java.util.Map;
+import java.util.*;
 
 public class ScenarioParams {
     private String name;
