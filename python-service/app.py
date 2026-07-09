@@ -37,14 +37,18 @@ def predict(payload: MultiPredictionRequest):
         result = {}
         for metric_name, metric_data in payload.data.items():
             df = compare_models(metric_data, payload.n_periods)
-            best_model = df.iloc[0]["model"]
             models_output = []
-            for _, row in df.iterrows():
+            for rank, (_, row) in enumerate(df.iterrows(), start=1):
                 forecast = row["forecast"]
-                forecast_json = {
-                    str(k.date()): float(v)
-                    for k, v in forecast.items()
-                }
+
+                forecast_json = (
+                    {
+                        str(k.date()): float(v)
+                        for k, v in forecast.items()
+                    }
+                    if forecast is not None
+                    else None
+                )
                 models_output.append({
                     "name": row["model"],
                     "metrics": {
@@ -54,12 +58,8 @@ def predict(payload: MultiPredictionRequest):
                         "time_sec": float(row["time_sec"])
                     },
                     "forecast": forecast_json,
-                    "best": row["model"] == best_model
+                    "best": rank
                 })
-            result[metric_name] = {
-                "models": models_output,
-                "best_model": best_model
-            }
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
