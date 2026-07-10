@@ -32,17 +32,57 @@ function factToRow(f: FactRow) {
     }
 }
 
+/** Строка прогноза: как факт, но с отдельной колонкой «План». */
+export interface ForecastRow extends FactRow {
+    plan: string
+}
+
+/** Заголовки листа «Прогнозы» — с отдельным столбцом «План». */
+const FORECAST_HEADERS = [
+    'Отчётный период',
+    'План',
+    'Федеральный округ РФ',
+    'Субъект РФ',
+    'Показатель',
+    'Мера измерения',
+    'Значение',
+] as const
+
+/** Ширины колонок для листа «Прогнозы». */
+const FORECAST_COLS = [{ wch: 16 }, { wch: 24 }, { wch: 22 }, { wch: 18 }, { wch: 28 }, { wch: 16 }, { wch: 14 }]
+
+/** Преобразует строку прогноза в объект с колонками-заголовками. */
+function forecastToRow(f: ForecastRow) {
+    return {
+        'Отчётный период': f.period,
+        План: f.plan,
+        'Федеральный округ РФ': f.district,
+        'Субъект РФ': f.subject,
+        Показатель: f.indicator,
+        'Мера измерения': f.unit,
+        Значение: f.value,
+    }
+}
+
 /**
  * Разворачивает сценарий-прогноз в плоские строки таблицы.
  * Приоритет — актуальные данные из `regionForecasts` (лучшая модель на регион),
  * с фолбэком на legacy-поле `series`.
+ * Имя плана попадает в отдельное поле `plan`. «Федеральный округ РФ» (`district`)
+ * подставляется по субъекту из `subjectToDistrict` (справочник из фактов),
+ * если соответствие найдено.
  */
-export function scenarioToForecastRows(scenario: Scenario): FactRow[] {
+export function scenarioToForecastRows(
+    scenario: Scenario,
+    subjectToDistrict?: Map<string, string>,
+): ForecastRow[] {
     const indicator = scenario.params?.targetIndicator || scenario.targetIndicator || ''
+    const plan = scenario.title || 'План'
+    const districtFor = (subject: string) => subjectToDistrict?.get(subject) ?? ''
 
     const regions = scenario.regionForecasts ? Object.keys(scenario.regionForecasts) : []
     if (regions.length > 0) {
-        const rows: FactRow[] = []
+        const rows: ForecastRow[] = []
         for (const region of regions) {
             const models = scenario.regionForecasts[region] || []
             const model = models[0] // модели отсортированы по rank
@@ -50,7 +90,8 @@ export function scenarioToForecastRows(scenario: Scenario): FactRow[] {
             for (const [period, value] of Object.entries(model.forecast)) {
                 rows.push({
                     period,
-                    district: scenario.title,
+                    plan,
+                    district: districtFor(region),
                     subject: region,
                     indicator,
                     unit: 'руб',
@@ -64,12 +105,24 @@ export function scenarioToForecastRows(scenario: Scenario): FactRow[] {
     // Фолбэк на legacy-серию
     return (scenario.series || []).map((p) => ({
         period: p.period,
-        district: scenario.title || 'План',
+        plan,
+        district: '',
         subject: 'Прогноз',
         indicator,
         unit: 'руб',
         value: p.value,
     }))
+}
+
+/** Строит справочник «субъект → федеральный округ» из строк фактов. */
+export function buildSubjectToDistrict(facts: FactRow[]): Map<string, string> {
+    const map = new Map<string, string>()
+    for (const f of facts) {
+        if (f.subject && f.district && !map.has(f.subject)) {
+            map.set(f.subject, f.district)
+        }
+    }
+    return map
 }
 
 /** Читаемое представление операторов в формулах. */
@@ -91,7 +144,7 @@ export interface ExportOptions {
     indicatorFilter?: string
     includeFormulaSheet: boolean
     /** Строки карточек-прогнозов для отдельного листа «Прогнозы». */
-    predictionRows?: FactRow[]
+    predictionRows?: ForecastRow[]
 }
 
 export interface ExportSummary {
@@ -248,10 +301,10 @@ export function exportToExcel(opts: ExportOptions): ExportSummary {
 
     // ---------- Лист «Прогнозы» ----------
     if (predictionRows && predictionRows.length > 0) {
-        const predSheet = XLSX.utils.json_to_sheet(predictionRows.map(factToRow), {
-            header: [...DATA_HEADERS],
+        const predSheet = XLSX.utils.json_to_sheet(predictionRows.map(forecastToRow), {
+            header: [...FORECAST_HEADERS],
         })
-        predSheet['!cols'] = DATA_COLS
+        predSheet['!cols'] = FORECAST_COLS
         XLSX.utils.book_append_sheet(wb, predSheet, 'Прогнозы')
         sheets.push('Прогнозы')
     }
@@ -284,13 +337,23 @@ export function exportToCsv(opts: Omit<ExportOptions, 'includeFormulaSheet' | 'g
         ? facts.filter((f) => f.indicator === indicatorFilter)
         : facts
 
-    const toLine = (f: FactRow) =>
-        [f.period, f.district, f.subject, f.indicator, f.unit, f.value].map(csvCell).join(';')
+    const hasForecasts = !!predictionRows && predictionRows.length > 0
 
-    const lines = [[...DATA_HEADERS].join(';')]
-    for (const f of filtered) lines.push(toLine(f))
+    // Когда есть прогнозы, добавляем отдельную колонку «План» (у фактов она пустая).
+    const factLine = (f: FactRow) =>
+        (hasForecasts
+            ? [f.period, '', f.district, f.subject, f.indicator, f.unit, f.value]
+            : [f.period, f.district, f.subject, f.indicator, f.unit, f.value]
+        ).map(csvCell).join(';')
+
+    const forecastLine = (f: ForecastRow) =>
+        [f.period, f.plan, f.district, f.subject, f.indicator, f.unit, f.value].map(csvCell).join(';')
+
+    const headers = hasForecasts ? FORECAST_HEADERS : DATA_HEADERS
+    const lines = [[...headers].join(';')]
+    for (const f of filtered) lines.push(factLine(f))
     // Строки карточек-прогнозов дописываем в конец той же таблицы
-    for (const f of predictionRows ?? []) lines.push(toLine(f))
+    for (const f of predictionRows ?? []) lines.push(forecastLine(f))
 
     const csv = '\uFEFF' + lines.join('\r\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })

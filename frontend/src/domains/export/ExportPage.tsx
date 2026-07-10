@@ -20,7 +20,7 @@ import { cn } from '@/shared/lib/cn'
 import { formatNumber } from '@/shared/lib/format'
 import { useDatasetStore } from '@/shared/store/useDatasetStore'
 import { usePrefersReducedMotion } from '@/shared/hooks/usePrefersReducedMotion'
-import { exportToCsv, exportToExcel, scenarioToForecastRows, type ExportSummary } from './lib/exportExcel'
+import { buildSubjectToDistrict, exportToCsv, exportToExcel, scenarioToForecastRows, type ExportSummary } from './lib/exportExcel'
 import { api } from '@/shared/lib/api'
 import type { Scenario, ScenarioKind, BusinessGraph } from '@/shared/lib/api-types'
 import { useGraphStore } from '@/domains/business-graph/store/useGraphStore'
@@ -104,14 +104,17 @@ export function ExportPage() {
         )
     }
 
+    // Справочник «субъект → федеральный округ» из фактов — для заполнения округа в прогнозах
+    const subjectToDistrict = useMemo(() => buildSubjectToDistrict(facts), [facts])
+
     // Разворачиваем выбранные карточки в строки прогнозов
     const predictionRows = useMemo(
         () =>
             selectedPredictionIds.flatMap(id => {
                 const sc = availablePredictions.find(s => s.id === id)
-                return sc ? scenarioToForecastRows(sc) : []
+                return sc ? scenarioToForecastRows(sc, subjectToDistrict) : []
             }),
-        [selectedPredictionIds, availablePredictions],
+        [selectedPredictionIds, availablePredictions, subjectToDistrict],
     )
 
     const isFiltered = indicatorFilter !== ALL
