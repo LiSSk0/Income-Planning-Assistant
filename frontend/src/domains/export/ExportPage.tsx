@@ -1,12 +1,13 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Download, FileSpreadsheet, CheckCircle2, Layers, Table2 } from 'lucide-react'
+import { Download, FileSpreadsheet, CheckCircle2, Layers, Table2, Brain, Loader2 } from 'lucide-react'
 import {
     Button,
     Card,
     CardBody,
     CardHeader,
     CardTitle,
+    Checkbox,
     EmptyState,
     Field,
     Select,
@@ -19,13 +20,21 @@ import { cn } from '@/shared/lib/cn'
 import { formatNumber } from '@/shared/lib/format'
 import { useDatasetStore } from '@/shared/store/useDatasetStore'
 import { usePrefersReducedMotion } from '@/shared/hooks/usePrefersReducedMotion'
-import { exportToCsv, exportToExcel, type ExportSummary } from './lib/exportExcel'
+import { buildSubjectToDistrict, exportToCsv, exportToExcel, scenarioToForecastRows, type ExportSummary } from './lib/exportExcel'
 import { api } from '@/shared/lib/api'
-import type { Scenario, BusinessGraph } from '@/shared/lib/api-types'
+import type { Scenario, ScenarioKind, BusinessGraph } from '@/shared/lib/api-types'
 import { useGraphStore } from '@/domains/business-graph/store/useGraphStore'
 
 const ALL = '__all__'
 type Format = 'xlsx' | 'csv'
+
+const KIND_LABEL: Record<ScenarioKind, string> = {
+    ai: 'AI',
+    optimistic: 'Оптимистичный',
+    conservative: 'Консервативный',
+    base: 'Базовый',
+    custom: 'Пользовательский',
+}
 
 export function ExportPage() {
     const prefersReduced = usePrefersReducedMotion()
@@ -44,6 +53,13 @@ export function ExportPage() {
     // ✅ НОВОЕ: загружаем граф с БЭКА для экспорта
     const [graphFromBackend, setGraphFromBackend] = useState<BusinessGraph | null>(null)
     const [loadingGraph, setLoadingGraph] = useState(false)
+
+    // ✅ НОВОЕ: карточки предсказаний (сценарии-прогнозы) для добавления в выгрузку
+    const [showPredictionPicker, setShowPredictionPicker] = useState(false)
+    const [availablePredictions, setAvailablePredictions] = useState<Scenario[]>([])
+    const [loadingPredictions, setLoadingPredictions] = useState(false)
+    const [predictionsError, setPredictionsError] = useState<string | null>(null)
+    const [selectedPredictionIds, setSelectedPredictionIds] = useState<string[]>([])
 
     useEffect(() => {
         setLoadingGraph(true)
@@ -66,7 +82,40 @@ export function ExportPage() {
 
     useEffect(() => {
         setResult(null)
-    }, [format, indicatorFilter, includeFormula, includePlan, selectedPlanId])
+    }, [format, indicatorFilter, includeFormula, includePlan, selectedPlanId, selectedPredictionIds])
+
+    // ✅ НОВОЕ: динамически подтягиваем доступные карточки предсказаний по клику
+    function loadPredictions() {
+        setShowPredictionPicker(true)
+        setLoadingPredictions(true)
+        setPredictionsError(null)
+        api.getScenarios()
+            .then(list => setAvailablePredictions(list.filter(s => s.status === 'ready')))
+            .catch(() => {
+                setAvailablePredictions([])
+                setPredictionsError('Не удалось загрузить прогнозы')
+            })
+            .finally(() => setLoadingPredictions(false))
+    }
+
+    function togglePrediction(id: string) {
+        setSelectedPredictionIds(prev =>
+            prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
+        )
+    }
+
+    // Справочник «субъект → федеральный округ» из фактов — для заполнения округа в прогнозах
+    const subjectToDistrict = useMemo(() => buildSubjectToDistrict(facts), [facts])
+
+    // Разворачиваем выбранные карточки в строки прогнозов
+    const predictionRows = useMemo(
+        () =>
+            selectedPredictionIds.flatMap(id => {
+                const sc = availablePredictions.find(s => s.id === id)
+                return sc ? scenarioToForecastRows(sc, subjectToDistrict) : []
+            }),
+        [selectedPredictionIds, availablePredictions, subjectToDistrict],
+    )
 
     const isFiltered = indicatorFilter !== ALL
     const hasGraph = graphFromBackend && graphFromBackend.nodes.length > 0
@@ -77,16 +126,19 @@ export function ExportPage() {
             const plan = scenarios.find(s => s.id === selectedPlanId)
             return plan?.series?.length || 0
         }
-        if (!isFiltered) return facts.length
-        return facts.filter(f => f.indicator === indicatorFilter).length
-    }, [facts, indicatorFilter, isFiltered, includePlan, selectedPlanId, scenarios])
+        const factsCount = isFiltered
+            ? facts.filter(f => f.indicator === indicatorFilter).length
+            : facts.length
+        return factsCount + predictionRows.length
+    }, [facts, indicatorFilter, isFiltered, includePlan, selectedPlanId, scenarios, predictionRows])
 
     const previewSheets = useMemo(() => {
         const list = ['Данные']
         if (formulaInExport) list.push('Формула')
+        if (!includePlan && predictionRows.length > 0) list.push('Прогнозы')
         if (includePlan && selectedPlanId) list.push('План')
         return list
-    }, [formulaInExport, includePlan, selectedPlanId])
+    }, [formulaInExport, includePlan, selectedPlanId, predictionRows])
 
     function handleExport() {
         let summary: ExportSummary
@@ -113,12 +165,17 @@ export function ExportPage() {
                 })
         } else {
             summary = format === 'csv'
-                ? exportToCsv({ facts, indicatorFilter: isFiltered ? indicatorFilter : undefined })
+                ? exportToCsv({
+                    facts,
+                    indicatorFilter: isFiltered ? indicatorFilter : undefined,
+                    predictionRows: predictionRows.length ? predictionRows : undefined,
+                })
                 : exportToExcel({
                     facts,
                     graph: graphFromBackend || { nodes: [], edges: [] },
                     indicatorFilter: isFiltered ? indicatorFilter : undefined,
                     includeFormulaSheet: formulaInExport,
+                    predictionRows: predictionRows.length ? predictionRows : undefined,
                 })
         }
         setResult(summary)
@@ -308,6 +365,79 @@ export function ExportPage() {
                                         />
                                     </div>
                                 </div>
+                            )}
+
+                            {!includePlan && (
+                                <Field label="Карточки предсказаний">
+                                    <div className="space-y-3">
+                                        <Button
+                                            variant="secondary"
+                                            size="sm"
+                                            onClick={loadPredictions}
+                                            disabled={loadingPredictions}
+                                        >
+                                            {loadingPredictions ? (
+                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                            ) : (
+                                                <Brain className="h-4 w-4" />
+                                            )}
+                                            Подтянуть доступные предсказания
+                                        </Button>
+
+                                        {showPredictionPicker && (
+                                            loadingPredictions ? (
+                                                <div className="space-y-2">
+                                                    <Skeleton className="h-12 w-full" />
+                                                    <Skeleton className="h-12 w-full" />
+                                                </div>
+                                            ) : predictionsError ? (
+                                                <p className="text-sm text-accent-red">{predictionsError}</p>
+                                            ) : availablePredictions.length === 0 ? (
+                                                <p className="text-sm text-text-muted">Нет готовых прогнозов.</p>
+                                            ) : (
+                                                <>
+                                                    <ul className="space-y-1.5">
+                                                        {availablePredictions.map(sc => {
+                                                            const checked = selectedPredictionIds.includes(sc.id)
+                                                            return (
+                                                                <li key={sc.id}>
+                                                                    <label
+                                                                        className={cn(
+                                                                            'flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition-colors',
+                                                                            checked
+                                                                                ? 'border-accent-green/50 bg-accent-green/10'
+                                                                                : 'border-border hover:bg-surface-hover',
+                                                                        )}
+                                                                    >
+                                                                        <Checkbox
+                                                                            checked={checked}
+                                                                            onChange={() => togglePrediction(sc.id)}
+                                                                            className="mt-0.5 shrink-0"
+                                                                        />
+                                                                        <span className="min-w-0 flex-1">
+                                                                            <span className="block truncate text-sm font-medium text-text-primary">
+                                                                                {sc.title}
+                                                                            </span>
+                                                                            <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                                                                                <Tag tone="lime">{KIND_LABEL[sc.kind] || sc.kind}</Tag>
+                                                                                <span className="truncate text-xs text-text-secondary">
+                                                                                    {sc.params?.targetIndicator || sc.targetIndicator}
+                                                                                </span>
+                                                                            </span>
+                                                                        </span>
+                                                                    </label>
+                                                                </li>
+                                                            )
+                                                        })}
+                                                    </ul>
+                                                    {selectedPredictionIds.length > 0 && (
+                                                        <Tag tone="green">Выбрано: {selectedPredictionIds.length}</Tag>
+                                                    )}
+                                                </>
+                                            )
+                                        )}
+                                    </div>
+                                </Field>
                             )}
 
                             <div className="flex flex-wrap items-center gap-3 pt-1">

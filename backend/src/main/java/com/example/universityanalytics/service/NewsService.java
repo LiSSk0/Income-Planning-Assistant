@@ -1,6 +1,7 @@
 package com.example.universityanalytics.service;
 
 import com.example.universityanalytics.dto.NewsDto;
+import com.example.universityanalytics.repository.FactRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,17 +15,21 @@ import java.util.concurrent.ConcurrentHashMap;
 public class NewsService {
     private static final Logger log = LoggerFactory.getLogger(NewsService.class);
     private final PythonClientService pythonClientService;
+    private final FactRepository factRepository;
 
+    // ✅ Кеш: ключ = "subject|period", значение = список новостей + время
     private final Map<String, CachedNews> cache = new ConcurrentHashMap<>();
-    private static final long TTL_MS = 2 * 60_000; // 2 минуты
+    private static final long TTL_MS = 5 * 60_000; // 5 минут
 
-    public NewsService(PythonClientService pythonClientService) {
+    public NewsService(PythonClientService pythonClientService, FactRepository factRepository) {
         this.pythonClientService = pythonClientService;
+        this.factRepository = factRepository;
     }
 
     public List<NewsDto> getNews(String subject, int period) {
         String key = (subject != null ? subject : "null") + "|" + period;
 
+        // ✅ Проверяем кеш
         CachedNews cached = cache.get(key);
         if (cached != null && System.currentTimeMillis() - cached.timestamp < TTL_MS) {
             log.debug("Возвращаем новости из кеша для ключа {}", key);
@@ -36,6 +41,13 @@ public class NewsService {
         Map<String, Object> request = new HashMap<>();
         request.put("subject", subject != null ? subject : "");
         request.put("period", period);
+        // ✅ Показатели передаём явно из БД, чтобы Python фильтровал новости
+        // по теме данных. Иначе Python делает обратный HTTP-вызов в Java, и
+        // при любой ошибке тихо получает пустой список — тогда тематический
+        // фильтр отключается и в ленту попадают случайные новости.
+        List<String> indicators = factRepository.findDistinctIndicators();
+        request.put("indicators", indicators);
+        log.info("Передаём {} показателей в Python для фильтрации новостей", indicators.size());
 
         List<NewsDto> news = new ArrayList<>();
 
@@ -57,6 +69,7 @@ public class NewsService {
                     news.add(dto);
                 }
             } else {
+                // fallback
                 news.add(createFallbackNews(subject));
             }
         } catch (Exception e) {
@@ -64,6 +77,7 @@ public class NewsService {
             news.add(createFallbackNews(subject));
         }
 
+        // ✅ Сохраняем в кеш
         cache.put(key, new CachedNews(news, System.currentTimeMillis()));
         return news;
     }
@@ -82,6 +96,7 @@ public class NewsService {
         return fallback;
     }
 
+    // ✅ Внутренний класс для кеша
     private static class CachedNews {
         final List<NewsDto> news;
         final long timestamp;
