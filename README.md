@@ -2,7 +2,7 @@
 
 # 📊 Income Planning Assistant
 
-### Помощник планирования доходов с AI-аналитикой, прогнозами и живой новостной лентой
+### Помощник планирования доходов с AI-аналитикой, прогнозами и новостной лентой
 
 [![Java](https://img.shields.io/badge/Java-17+-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.3.0-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
@@ -16,42 +16,42 @@
 
 ---
 
-## ✨ О проекте
+## О проекте
 
 **Income Planning Assistant** — аналитическая платформа для планирования доходов по регионам и отраслям.
-Пользователь загружает Excel с историческими данными, а система:
+Пользователь загружает Excel с историческими данными, настривает интерактивный граф, а система:
 
-- 🔮 **прогнозирует** показатели несколькими ML-моделями и выбирает лучшую;
-- 🧭 строит **дерево бизнес-драйверов** и сценарии «что если»;
-- 🚨 находит **аномалии** во временных рядах и предлагает их скорректировать;
-- 📰 подтягивает **релевантные новости** из деловых СМИ и ранжирует их по важности через **GigaChat**;
-- 📈 показывает всё это в интерактивном дашборде с картой регионов и экспортом в CSV.
+- **прогнозирует** показатели несколькими ML-моделями и выбирает лучшую
+- строит **дерево бизнес-драйверов** по интерактивному графу
+- находит **аномалии** во временных рядах и предлагает их скорректировать
+- подтягивает **релевантные новости** из деловых СМИ и ранжирует их по важности через **GigaChat**
+- показывает всё это в интерактивном дашборде с картой регионов и экспортом в CSV
 
 ---
 
-## 🏗️ Архитектура
+## Архитектура
 
-Три независимых сервиса, общающихся по HTTP и WebSocket:
+Три сервиса, общающихся по HTTP и WebSocket:
 
 ```mermaid
 flowchart LR
-    U([👤 Пользователь]) --> FE
+    U([Пользователь]) --> FE
 
-    subgraph FE["🖥️ Frontend · React + Vite"]
+    subgraph FE["Frontend · React + Vite"]
         direction TB
         UI[Дашборд · карта · графы]
     end
 
-    subgraph BE["☕ Backend · Spring Boot :8080"]
+    subgraph BE["Backend · Spring Boot :8080"]
         direction TB
         API[REST API + Swagger]
         WS[WebSocket /ws/news]
         DB[(H2 Database)]
     end
 
-    subgraph PY["🐍 AI-сервис · FastAPI :5000"]
+    subgraph PY["AI-сервис · FastAPI :5000"]
         direction TB
-        ML[ML-прогнозы<br/>SARIMAX · Prophet · Ridge …]
+        ML[ML-прогнозы<br/>SARIMAX · Prophet · Ridge ...]
         NEWS[Парсер новостей RSS]
         GIGA[GigaChat-анализ]
     end
@@ -72,9 +72,9 @@ flowchart LR
 
 ---
 
-## 📰 Новостной пайплайн (GigaChat)
+## Новостной пайплайн (GigaChat)
 
-Ключевая фишка — новости не «любые», а **по теме загруженных данных** и отсортированные по важности.
+Ключевая фишка — новости находятся **по теме загруженных данных** и отсортированы по важности.
 
 ```mermaid
 sequenceDiagram
@@ -95,58 +95,58 @@ sequenceDiagram
     PY-->>FE: DONE · релевантные новости с реальными ссылками
 ```
 
-**Что внутри:**
-- 🎯 **Тематическая фильтрация** — из названий показателей строятся ключевые префиксы + доменные кластеры (автопром, АПК, общепит, финтех), поэтому данные про автопром находят новости про автопром, а не случайные.
-- 🗺️ **Фильтр по региону** — с учётом синонимов (Москва ↔ Подмосковье, Петербург ↔ Питер).
-- 🛡️ **Устойчивость к отказам GigaChat** — если модель отказывается анализировать острые темы, запрос автоматически повторяется без них.
-- 🔗 **Восстановление ссылок** — реальные URL из RSS подставляются в ответ модели.
-- ⚡ **Живые статусы** по WebSocket: `START → INDICATORS → PARSED → FOUND → ANALYZING → DONE`.
+**Внутри:**
+- **Тематическая фильтрация** — из названий показателей строятся ключевые префиксы + доменные кластеры (автопром, АПК, общепит, финтех), поэтому данные про автопром находят новости про автопром, а не случайные.
+- **Фильтр по региону** — с учётом синонимов (Москва - Подмосковье, Петербург - Питер).
+- **Устойчивость к отказам GigaChat** — если модель отказывается анализировать острые темы, запрос автоматически повторяется без них.
+- **Восстановление ссылок** — реальные URL из RSS подставляются в ответ модели.
+- **Живые статусы** по WebSocket: `START → INDICATORS → PARSED → FOUND → ANALYZING → DONE`.
 
 ---
 
-## 🚀 Быстрый старт
+## Запуск
 
-> Нужны: **JDK 17+**, **Python 3.11+**, **Node.js 18+**.
+> Нужны: **JDK 17+**, **Python 3.11+**, **Node.js 18+**
 
-### 1. Backend — Spring Boot
-
+### 1. Backend
+В файле backend/gradle.properties устанавливаем свой путь к JDK. Если стоит по умолчанию в JAVA_HOME, то можно оставить пустой файл.
 ```bash
 cd backend
-./gradlew bootRun
+gradlew bootRun
 ```
-📍 `http://localhost:8080` · Swagger UI: `http://localhost:8080/swagger-ui.html`
+Адрес: `http://localhost:8080` · Swagger UI: `http://localhost:8080/swagger-ui.html`
 
-### 2. AI-сервис — FastAPI
+### 2. AI-сервис
 
 ```bash
 cd python-service
 pip install -r requirements.txt
 
 # токен для GigaChat
-echo "AUTH_TOKEN=<ваш_токен_GigaChat>" > .env
+echo "AUTH_TOKEN=<ваш_токен>" > .env
 
 python app.py
 ```
-📍 `http://localhost:5000` · health-check: `http://localhost:5000/health`
+Адрес: `http://localhost:5000` · health-check: `http://localhost:5000/health`
 
-### 3. Frontend — React
+### 3. Frontend
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-📍 `http://localhost:5173`
+Адрес: `http://localhost:5173`
 
 ---
 
-## 🔌 Основные эндпоинты
+## Основные эндпоинты
 
 | Метод | Путь | Описание |
 |-------|------|----------|
 | `POST` | `/api/upload` | Загрузка Excel с данными |
 | `GET` | `/api/indicators` | Список показателей |
-| `GET` | `/api/forecast` | Прогноз по показателю (SARIMAX/Prophet/…) |
+| `GET` | `/api/forecast` | Прогноз по показателю (SARIMAX, Prophet, ...) |
 | `GET` | `/api/seasonality` | Сезонность |
 | `GET` | `/api/analytics/drivers` | Дерево бизнес-драйверов |
 | `POST` | `/api/scenarios` | Сценарии «что если» |
@@ -156,18 +156,18 @@ npm run dev
 | `POST` | `/api/ai/summary` | Краткая AI-сводка по региону |
 | `GET` | `/api/export/csv` | Экспорт в CSV |
 
-> Полный контракт — в **Swagger UI**.
+> Полный контракт - в **Swagger UI**.
 
 ---
 
-## 🗂️ Структура репозитория
+## Структура репозитория
 
 ```
 Income-Planning-Assistant/
 ├── backend/            # Spring Boot: REST/WS API, JPA, оркестрация
 │   └── src/main/java/com/example/universityanalytics/
-│       ├── controller/ # AnalyticsController — все эндпоинты
-│       ├── service/    # NewsService, ForecastService, AnomalyService …
+│       ├── controller/ # AnalyticsController - все эндпоинты
+│       ├── service/    # Сервисы: NewsService, ForecastService, ...
 │       └── ...
 ├── python-service/     # FastAPI: ML-прогнозы + новости + GigaChat
 │   ├── app.py                 # эндпоинты /predict, /ws/news, /generate-news
@@ -175,19 +175,31 @@ Income-Planning-Assistant/
 │   ├── text_generation.py     # анализ новостей через GigaChat
 │   └── ai_prediction.py       # сравнение ML-моделей
 └── frontend/           # React + Vite: дашборд
-    └── src/domains/    # ai-insights, analytics, scenarios, business-graph …
+    └── src/domains/    # ai-insights, analytics, scenarios, ...
 ```
 
 ---
 
-## ⚙️ Технологии
+## Технологии
 
 **Backend:** Java 17 · Spring Boot 3.3 · Spring Data JPA · H2 · WebSocket · WebFlux · Apache POI · springdoc-openapi
+
 **AI-сервис:** FastAPI · Uvicorn · scikit-learn · statsmodels · Prophet · pandas/numpy · feedparser · GigaChat SDK
+
 **Frontend:** React 18 · TypeScript · Vite · TailwindCSS · Zustand · Recharts · React Flow · react-simple-maps · MSW
 
 ---
+## Команда разработчиков
 
-<div align="center">
-Сделано для планирования доходов 💚
-</div>
+- **Backend** - Сергей Рачков
+
+- **System Analytics** - Елизавета Чичкан
+
+- **AI** - Дарья Соловьева
+
+- **Frontend** - Даниил Симанов
+
+- **DB & Data** - Денис Казачук
+
+💚 Проект выполнен для **ПАО "Сбербанк"**
+
