@@ -34,7 +34,7 @@
 Схема системной архитектуры:
 
 <p align="center">
-  <img src="docs/sys_architecture.jpg" width="80%" alt="Системная архитектура">
+  <img src="docs/sys_architecture_schema.jpg" width="80%" alt="Системная архитектура">
 </p>
 
 
