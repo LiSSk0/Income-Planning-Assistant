@@ -31,6 +31,9 @@
 
 ## Архитектура
 
+Схема системной архитектуры:
+![Системная архитектура](docs/sys_architecture_schema.jpg)
+
 Три сервиса, общающихся по HTTP и WebSocket:
 
 ```mermaid
@@ -191,15 +194,15 @@ Income-Planning-Assistant/
 ---
 ## Команда разработчиков
 
-- **Backend** - Сергей Рачков
+- **Backend** - Сергей Рачков (*tg: @Rubilaksik*)
 
-- **System Analytics** - Елизавета Чичкан
+- **System Analytics** - Елизавета Чичкан (*tg: @lissk0*)
 
-- **AI** - Дарья Соловьева
+- **AI** - Дарья Соловьева (*tg: @KurlikDa*)
 
-- **Frontend** - Даниил Симанов
+- **Frontend** - Даниил Симанов (*tg: @FearlESL*)
 
-- **DB & Data** - Денис Казачук
+- **DB & Data** - Денис Казачук (*tg: @desik_vl05*)
 
 💚 Проект выполнен для **ПАО "Сбербанк"**
 
