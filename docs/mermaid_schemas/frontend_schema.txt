@@ -1,0 +1,240 @@
+flowchart TB
+    subgraph Routing["Маршрутизация и Гарды"]
+        Router[router.tsx]
+        Auth[RequireAuth]
+        Guard[RouteGuard]
+        Router --> Auth
+        Router --> Guard
+    end
+
+    subgraph Pages["Страницы"]
+        Overview[OverviewPage]
+        Scenarios[ScenariosPage]
+        Export[ExportPage]
+        Upload[UploadPage]
+        Graph[BusinessGraphPage]
+        AI[AiInsightsPage]
+        Login[LoginPage]
+    end
+
+    subgraph Domain["Доменные компоненты"]
+        Dropzone[Dropzone]
+        EntityReview[EntityReview]
+        DataTable[DataTablePreview]
+        IndicatorNode[IndicatorNode]
+        OperationNode[OperationNode]
+        NodeInspector[NodeInspector]
+        GraphToolbar[GraphToolbar]
+        FormulaExpression[FormulaExpression]
+        NewsCard[NewsCardItem]
+        AnomalyCard[AnomalyCardItem]
+        AiSummary[AiSummary]
+        RevenueSparkline[RevenueSparkline]
+        DriversChart[DriversChart]
+        ScenarioCard[ScenarioCard]
+        ScenarioCompare[ScenarioCompare]
+        ScenarioForm[ScenarioForm]
+        RussiaMap[RussiaMap]
+        PlanIndicators[PlanIndicatorsView]
+        YoYStdChart[YoYStdChart]
+        RegionAnalytics[RegionAnalytics]
+    end
+
+    subgraph UI["Атомарные UI-компоненты"]
+        Button[Button]
+        Card[Card и др.]
+        Input[Input, Select, Field]
+        Tag[Tag]
+        StatusPill[StatusPill]
+        Skeleton[Skeleton]
+        ProgressBar[ProgressBar]
+        Toggle[Toggle]
+        Checkbox[Checkbox]
+        EmptyState[EmptyState]
+        KpiStat[KpiStat]
+        AnimatedNumber[AnimatedNumber]
+        PageHeader[PageHeader]
+        AmbientBackground[AmbientBackground]
+    end
+
+    subgraph Stores["Хранилища Zustand"]
+        DatasetStore[useDatasetStore]
+        ScenarioStore[useScenarioStore]
+        GraphStore[useGraphStore]
+        SessionStore[useSessionStore]
+        NewsStore[useNewsStore]
+    end
+
+    subgraph API["API-клиент"]
+        APIClient[api.ts]
+        Methods["getFacts, getEntities, ..."]
+    end
+
+    subgraph Hooks["Кастомные хуки"]
+        PrefersReduced[usePrefersReducedMotion]
+        UploadProgress[useUploadProgress]
+        Typewriter[useTypewriter]
+        Virtualizer[useVirtualizer]
+    end
+
+    subgraph Utils["Утилиты"]
+        Format[format.ts]
+        Cn[cn.ts]
+        Limiter[limiter.ts]
+        ExportExcel[exportExcel.ts]
+        Selectors[selectors.ts]
+        BuildFormulas[buildFormulas.ts]
+        Layout[layout.ts]
+        MapToFlow[mapToFlow.ts]
+    end
+
+    subgraph Mocks["Моки MSW"]
+        Handlers[handlers.ts]
+        Seed[seed.ts]
+        GraphMock[graph.ts]
+        ScenariosMock[scenarios.ts]
+        DriversMock[drivers.ts]
+        AIMock[ai.ts]
+        AISummaryMock[aiSummary.ts]
+        YoYStdMock[yoyStd.ts]
+        BrowserMock[browser.ts]
+    end
+
+    subgraph External["Внешние системы"]
+        Backend[Бэкенд REST API]
+        WSSim[WebSocket симуляция]
+    end
+
+    subgraph Cache["Кэширование"]
+        SessionStorage[(sessionStorage)]
+        LocalStorage[(localStorage)]
+    end
+
+    %% Связи страниц с доменными компонентами и сторами
+    Overview -->|использует| DataTable
+    Overview -->|использует| KpiStat
+    Overview -->|использует| DatasetStore
+    Overview -->|использует| SessionStore
+
+    Scenarios -->|использует| ScenarioCard
+    Scenarios -->|использует| ScenarioCompare
+    Scenarios -->|использует| ScenarioForm
+    Scenarios -->|использует| RussiaMap
+    Scenarios -->|использует| YoYStdChart
+    Scenarios -->|использует| PlanIndicators
+    Scenarios -->|использует| DatasetStore
+    Scenarios -->|использует| ScenarioStore
+
+    Export -->|использует| ExportExcel
+    Export -->|использует| DatasetStore
+    Export -->|использует| GraphStore
+
+    Upload -->|использует| Dropzone
+    Upload -->|использует| EntityReview
+    Upload -->|использует| DataTable
+    Upload -->|использует| UploadProgress
+    Upload -->|использует| DatasetStore
+    Upload -->|использует| GraphStore
+    Upload -->|использует| ScenarioStore
+
+    Graph -->|использует| IndicatorNode
+    Graph -->|использует| OperationNode
+    Graph -->|использует| NodeInspector
+    Graph -->|использует| GraphToolbar
+    Graph -->|использует| FormulaExpression
+    Graph -->|использует| DatasetStore
+    Graph -->|использует| GraphStore
+
+    AI -->|использует| NewsCard
+    AI -->|использует| AnomalyCard
+    AI -->|использует| AiSummary
+    AI -->|использует| RevenueSparkline
+    AI -->|использует| RegionAnalytics
+    AI -->|использует| DriversChart
+    AI -->|использует| NewsStore
+    AI -->|использует| DatasetStore
+
+    Login -->|использует| SessionStore
+    Login -->|использует| AmbientBackground
+
+    %% Связи доменных компонентов со сторами и API
+    DataTable -->|читает| DatasetStore
+    ScenarioCard -->|использует| ScenarioStore
+    ScenarioCompare -->|использует| ScenarioStore
+    ScenarioForm -->|использует| DatasetStore
+    ScenarioForm -->|использует| ScenarioStore
+    NodeInspector -->|использует| GraphStore
+    GraphToolbar -->|использует| GraphStore
+    YoYStdChart -->|использует| DatasetStore
+    DriversChart -->|использует| APIClient
+    RegionAnalytics -->|использует| DriversChart
+    EntityReview -->|использует| APIClient
+    Upload -->|использует| APIClient
+    Graph -->|использует| APIClient
+
+    %% Хранилища -> API
+    DatasetStore -->|вызывает| APIClient
+    ScenarioStore -->|вызывает| APIClient
+    GraphStore -->|вызывает| APIClient
+    NewsStore -->|вызывает| APIClient
+    NewsStore -->|кэширует в| SessionStorage
+    GraphStore -->|кэширует в| LocalStorage
+
+    %% API -> внешние
+    APIClient -->|HTTP| Backend
+    APIClient -.->|MSW подмена| Handlers
+    UploadProgress -.->|симулирует| WSSim
+
+    %% Моки -> данные
+    Handlers -->|используют| Seed
+    Handlers -->|используют| GraphMock
+    Handlers -->|используют| ScenariosMock
+    Handlers -->|используют| DriversMock
+    Handlers -->|используют| AIMock
+    Handlers -->|используют| AISummaryMock
+    Handlers -->|используют| YoYStdMock
+    BrowserMock -->|запускает| Handlers
+
+    %% Утилиты используются доменными компонентами и страницами
+    Layout -->|используется в| Graph
+    BuildFormulas -->|используется в| GraphToolbar
+    MapToFlow -->|используется в| Graph
+    Selectors -->|используется в| RevenueSparkline
+    ExportExcel -->|используется в| Export
+    Limiter -->|используется в| APIClient
+    Format -->|используется во многих| Components
+    Cn -->|используется во многих| Components
+
+    %% Маршрутизация защищает страницы
+    Router -->|защищает| Overview
+    Router -->|защищает| Scenarios
+    Router -->|защищает| Export
+    Router -->|защищает| Upload
+    Router -->|защищает| Graph
+    Router -->|защищает| AI
+    Router -->|защищает| Login
+
+    %% Стилизация (опционально)
+    classDef page fill:#e1f5fe,stroke:#01579b
+    classDef domain fill:#f3e5f5,stroke:#4a148c
+    classDef ui fill:#fff3e0,stroke:#e65100
+    classDef store fill:#e8f5e9,stroke:#1b5e20
+    classDef api fill:#fff8e1,stroke:#f9a825
+    classDef hook fill:#fce4ec,stroke:#c62828
+    classDef util fill:#f3e5f5,stroke:#6a1b9a
+    classDef mock fill:#e0f2f1,stroke:#00695c
+    classDef external fill:#efebe9,stroke:#4e342e
+    classDef cache fill:#fff9c4,stroke:#fbc02d
+    classDef route fill:#ffebee,stroke:#b71c1c
+
+    class Overview,Scenarios,Export,Upload,Graph,AI,Login page
+    class Dropzone,EntityReview,DataTable,IndicatorNode,OperationNode,NodeInspector,GraphToolbar,FormulaExpression,NewsCard,AnomalyCard,AiSummary,RevenueSparkline,DriversChart,ScenarioCard,ScenarioCompare,ScenarioForm,RussiaMap,PlanIndicators,YoYStdChart,RegionAnalytics domain
+    class Button,Card,Input,Tag,StatusPill,Skeleton,ProgressBar,Toggle,Checkbox,EmptyState,KpiStat,AnimatedNumber,PageHeader,AmbientBackground ui
+    class DatasetStore,ScenarioStore,GraphStore,SessionStore,NewsStore store
+    class APIClient,Methods api
+    class PrefersReduced,UploadProgress,Typewriter,Virtualizer hook
+    class Format,Cn,Limiter,ExportExcel,Selectors,BuildFormulas,Layout,MapToFlow util
+    class Handlers,Seed,GraphMock,ScenariosMock,DriversMock,AIMock,AISummaryMock,YoYStdMock,BrowserMock mock
+    class Backend,WSSim external
+    class SessionStorage,LocalStorage cache
+    class Router,Auth,Guard route
