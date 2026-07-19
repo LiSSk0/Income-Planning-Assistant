@@ -32,7 +32,11 @@
 ## Архитектура
 
 Схема системной архитектуры:
-<img src="docs/sys_architecture_schema.jpg" width="70%" alt="Системная архитектура">
+
+<p align="center">
+  <img src="docs/sys_architecture.jpg" width="80%" alt="Системная архитектура">
+</p>
+
 
 Три сервиса, общающихся по HTTP и WebSocket:
 
