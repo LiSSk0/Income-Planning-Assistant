@@ -1,0 +1,94 @@
+flowchart TB
+    %% Стилизация
+    classDef presentation fill:#e1f5fe,stroke:#01579b,color:#000
+    classDef business fill:#f3e5f5,stroke:#4a148c,color:#000
+    classDef data fill:#fff3e0,stroke:#e65100,color:#000
+    classDef external fill:#e8f5e9,stroke:#1b5e20,color:#000
+
+    subgraph Presentation["Presentation Layer"]
+        Controller[AnalyticsController]
+    end
+
+    subgraph Business["Business Layer (Services)"]
+        Upload[UploadDataService]
+        Excel[ExcelParserService]
+        Anomaly[AnomalyService]
+        Drivers[DriversService]
+        Forecast[ForecastService]
+        Graph[GraphService]
+        News[NewsService]
+        Progress[ProgressService]
+        PythonClient[PythonClientService]
+        Scenario[ScenarioService]
+        Season[SeasonalityService]
+    end
+
+    subgraph Data["Data Layer"]
+        FactRepo[FactRepository]
+        GraphNodeRepo[GraphNodeRepository]
+        GraphEdgeRepo[GraphEdgeRepository]
+        ScenarioRepo[ScenarioRepository]
+    end
+
+    subgraph External["External Systems"]
+        DB[(PostgreSQL)]
+        PythonAPI[Python ML Service\n/predict, /generate-news, /generate-text]
+        WS[WebSocket Broker]
+    end
+
+    %% Связи от контроллера к сервисам и репозиториям (прямые)
+    Controller -->|GET /facts| FactRepo
+    Controller -->|POST /upload| Upload
+    Controller -->|GET /graph| Graph
+    Controller -->|POST /graph/formulas| Graph
+    Controller -->|GET /scenarios| Scenario
+    Controller -->|POST /scenarios| Scenario
+    Controller -->|DELETE /scenarios| Scenario
+    Controller -->|GET /anomalies| Anomaly
+    Controller -->|GET /news| News
+    Controller -->|POST /news| News
+    Controller -->|POST /ai/summary| PythonClient
+    Controller -->|GET /analytics/drivers| Drivers
+    Controller -->|GET /seasonality| Season
+    Controller -->|GET /forecast| Forecast
+    Controller -->|GET /regions| FactRepo
+    Controller -->|GET /indicators| FactRepo
+    Controller -->|GET /entities| FactRepo
+    Controller -->|GET /export/csv| FactRepo
+    Controller -->|DELETE /clean| FactRepo
+    Controller -->|DELETE /clean| Graph
+
+    %% Связи между сервисами и репозиториями / другими сервисами
+    Upload -->|uses| Excel
+    Upload -->|upsert| FactRepo
+
+    Excel -->|сохраняет| FactRepo
+
+    Anomaly -->|читает| FactRepo
+    Drivers -->|читает| FactRepo
+    Forecast -->|читает| FactRepo
+    Forecast -->|вызывает| PythonClient
+    News -->|вызывает| PythonClient
+    Scenario -->|читает| FactRepo
+    Scenario -->|вызывает| PythonClient
+    Scenario -->|получает граф| Graph
+    Scenario -->|сохраняет| ScenarioRepo
+    Graph -->|CRUD| GraphNodeRepo
+    Graph -->|CRUD| GraphEdgeRepo
+    Season -->|читает| FactRepo
+
+    %% Внешние вызовы
+    PythonClient -->|HTTP| PythonAPI
+    Progress -->|WebSocket| WS
+
+    %% Репозитории к БД
+    FactRepo --> DB
+    GraphNodeRepo --> DB
+    GraphEdgeRepo --> DB
+    ScenarioRepo --> DB
+
+    %% Применение стилей
+    class Controller presentation
+    class Upload,Excel,Anomaly,Drivers,Forecast,Graph,News,Progress,PythonClient,Scenario,Season business
+    class FactRepo,GraphNodeRepo,GraphEdgeRepo,ScenarioRepo data
+    class DB,PythonAPI,WS external

@@ -1,0 +1,13 @@
+fastapi
+feedparser
+gigachat
+numpy
+pandas
+prophet
+pydantic
+python-dotenv
+python_dateutil
+Requests
+scikit_learn
+statsmodels
+uvicorn[standard]
